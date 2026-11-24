@@ -1,0 +1,108 @@
+{
+  "name": "voice-mode",
+  "version": "0.5.6",
+  "description": "Lets Codex talk to you out loud in a local text-to-speech voice, with robot sounds while it works.",
+  "author": {
+    "name": "JRMeyer"
+  },
+  "interface": {
+    "displayName": "Voice Mode",
+    "shortDescription": "Codex talks to you out loud as it works.",
+    "longDescription": "A local robot voice (tiny-voca) speaks a short acknowledgment when you send a message, check-ins on long turns, and a spoken summary at the end. Soft sounds play while Codex works and a chime plays when it needs your approval. Everything runs on your computer except the short narrator lines, which a small OpenAI model writes through the Codex CLI.",
+    "developerName": "JRMeyer",
+    "category": "Productivity",
+    "capabilities": [
+      "Read"
+    ],
+    "defaultPrompt": [
+      "Turn voice mode off.",
+      "Say hello out loud."
+    ]
+  },
+  "mcpServers": {
+    "voice-mode": {
+      "command": "node",
+      "args": [
+        "./codex/mcp.mjs"
+      ],
+      "cwd": ".",
+      "default_tools_approval_mode": "approve"
+    }
+  },
+  "hooks": {
+    "hooks": {
+      "SessionStart": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "node \"${PLUGIN_ROOT}/codex/hook.mjs\"",
+              "timeout": 10,
+              "statusMessage": "Voice mode — SessionStart"
+            }
+          ]
+        }
+      ],
+      "UserPromptSubmit": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "node \"${PLUGIN_ROOT}/codex/hook.mjs\"",
+              "timeout": 10,
+              "statusMessage": "Voice mode — UserPromptSubmit"
+            }
+          ]
+        }
+      ],
+      "PreToolUse": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "node \"${PLUGIN_ROOT}/codex/hook.mjs\"",
+              "timeout": 10,
+              "statusMessage": "Voice mode — PreToolUse"
+            }
+          ]
+        }
+      ],
+      "PermissionRequest": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "node \"${PLUGIN_ROOT}/codex/hook.mjs\"",
+              "timeout": 10,
+              "statusMessage": "Voice mode — PermissionRequest"
+            }
+          ]
+        }
+      ],
+      "PostToolUse": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "node \"${PLUGIN_ROOT}/codex/hook.mjs\"",
+              "timeout": 10,
+              "statusMessage": "Voice mode — PostToolUse"
+            }
+          ]
+        }
+      ],
+      "Stop": [
+        {
+          "hooks": [
+            {
+              "type": "command",
+              "command": "node \"${PLUGIN_ROOT}/codex/hook.mjs\"",
+              "timeout": 30,
+              "statusMessage": "Voice mode — Stop"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

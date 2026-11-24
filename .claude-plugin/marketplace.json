@@ -1,0 +1,5 @@
+{
+  "name": "voice-mode",
+  "owner": { "name": "JRMeyer" },
+  "plugins": [{ "name": "voice-mode", "source": "./", "description": "Claude Code or Codex talks out loud in a local robot voice (tiny-voca), with synthesized robot sounds." }]
+}

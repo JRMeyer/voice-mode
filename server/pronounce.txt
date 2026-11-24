@@ -1,0 +1,7 @@
+# How to say words the voice gets wrong: "word = how to say it", one per line.
+# The right side is plain spelling the voice reads well. Matching ignores case.
+Claude = clawed
+Codex = code ex
+GitHub = git hub
+Haiku = high koo
+tiny-voca = tiny voca
