@@ -9,13 +9,12 @@
 //   POST /wait/start (body: what to say): speak it after a chime, then chime every 30 s until /wait/stop.
 //   POST /quit exits (a newer daemon for the same session asks this of the old one).
 // Usage: node daemon.mjs <socket path>
-// Env: VOICE_MODE_JS (tiny-voca js folder), VOICE_MODE_MODEL (.gguf), VOICE_MODE_VOICE (default M2), VOICE_MODE_PLAYER (sox play),
+// Env: VOICE_MODE_JS (tiny-voca js folder, default vendor/tiny-voca), VOICE_MODE_MODEL (.gguf), VOICE_MODE_VOICE (default M2), VOICE_MODE_PLAYER (sox play),
 //   VOICE_MODE_LABEL (project name to say; default: the project folder's name).
 // Every daemon on the machine shares one floor (floor.mjs): only one of them plays at a time.
 import { readFileSync, existsSync, unlinkSync, appendFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { createServer, request } from "node:http";
-import { homedir } from "node:os";
 import { join, basename } from "node:path";
 import { sfx, SOUND_NAMES } from "./sfx.mjs";
 import { createFloor } from "./floor.mjs";
@@ -25,9 +24,9 @@ const T0 = Date.now();
 const log = (...a) => { try { appendFileSync(SOCK + ".log", `${((Date.now() - T0) / 1000).toFixed(2)} ${a.join(" ")}
 `); } catch {} };
 console.log = log; console.error = log;
-const JS = process.env.VOICE_MODE_JS || join(homedir(), "code/tiny-voca/js");
+const JS = process.env.VOICE_MODE_JS || join(import.meta.dirname, "../vendor/tiny-voca");
 const BUNDLED = join(import.meta.dirname, "../models/robo-josh.gguf");
-const MODEL = process.env.VOICE_MODE_MODEL || (existsSync(BUNDLED) ? BUNDLED : join(JS, "robo-josh.gguf"));
+const MODEL = process.env.VOICE_MODE_MODEL || BUNDLED;
 const VOICE = process.env.VOICE_MODE_VOICE || "M2";
 const LABEL = process.env.VOICE_MODE_LABEL || basename(process.env.CLAUDE_PROJECT_DIR || process.cwd());
 const floor = createFloor();

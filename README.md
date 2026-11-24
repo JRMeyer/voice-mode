@@ -2,7 +2,7 @@
 
 A plugin for Claude Code, Codex and OpenCode that lets the agent talk to you out loud. A small, fast model writes the spoken lines from what the main session does (Claude Haiku in Claude Code, a small OpenAI model in Codex, your `small_model` in OpenCode), so the main model never spends a step on speech. Things you should look at (tables, code, file paths) stay on screen.
 
-- **Voice:** runs on your own computer with [tiny-voca](https://github.com/n4ze3m/tiny-voca). It ships a custom tiny-voca voice, `models/robo-josh.gguf`.
+- **Voice:** runs on your own computer with [tiny-voca](https://github.com/n4ze3m/tiny-voca). It ships a custom tiny-voca voice, `models/robo-josh.gguf`, and tiny-voca's JavaScript engine in `vendor/tiny-voca`, so there is nothing else to download.
 - **Persona:** a friendly 1980s movie robot. It speaks in short, clipped sentences.
 - **Robot sounds:** tags in the spoken text play in place, used sparingly (one per line, plus one for a real result): `[beep] [boop] [click] [servo] [think] [success] [error] [boot]`. The sounds are made from tones and noise in `server/sfx.mjs`; there are no audio files.
 - **What you hear:** a short acknowledgment as soon as you press Enter, a check-in on long turns, and at the end a short summary of what Claude did and what it found, with the next step. Each narrator call is logged to `narrator.log` in the plugin's data folder with latency, tokens and the spoken text.
@@ -19,7 +19,6 @@ A plugin for Claude Code, Codex and OpenCode that lets the agent talk to you out
 
 - macOS or Linux with Node 22 or newer.
 - sox, for audio playback: `brew install sox`.
-- A copy of tiny-voca at `~/code/tiny-voca`. The plugin loads `js/tiny-voca.js` from it. To use a copy somewhere else, set `VOICE_MODE_JS` to its `js` folder.
 
 ## Install
 
@@ -58,8 +57,6 @@ git clone https://github.com/JRMeyer/voice-mode ~/code/voice-mode
 ```
 
 Use the full path to your clone (OpenCode does not expand `~`). Restart OpenCode after adding it.
-
-The repository is private, so installing needs GitHub access to it.
 
 ## Codex
 
@@ -133,7 +130,7 @@ Codex runs each hook as its own short process and gives plugins no model call, s
 | `VOICE_MODE_MODEL` | the voice model file | the bundled model |
 | `VOICE_MODE_VOICE` | the voice ID | `M2` |
 | `VOICE_MODE_PLAYER` | the sox `play` program | sox `play` |
-| `VOICE_MODE_JS` | tiny-voca's `js` folder | `~/code/tiny-voca/js` |
+| `VOICE_MODE_JS` | tiny-voca's `js` folder | the bundled copy in `vendor/tiny-voca` |
 | `VOICE_MODE_HOME` | the shared floor lock; for Codex also the state and socket folder | `~/.voice-mode` |
 | `VOICE_MODE_LABEL` | the project name said when the voice switches projects | the project folder's name |
 | `VOICE_MODE_NARRATOR` | Codex only: the Codex executable the narrator runs | `codex` |
@@ -162,4 +159,4 @@ Turn the voice off with "stop talking" or "voice off" in a message; "voice on" t
 
 ## License
 
-The code is licensed under the Apache License 2.0 (see `LICENSE`). The voice model in `models/` is licensed under [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/): free for non-commercial use with credit; for commercial use, open an issue to ask. It is fine-tuned from [tiny-voca](https://huggingface.co/n4ze3m/tiny-voca) (Apache 2.0); see `models/NOTICE`.
+The code is licensed under the Apache License 2.0 (see `LICENSE`). The voice model in `models/` is licensed under [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/): free for non-commercial use with credit; for commercial use, open an issue to ask. It is fine-tuned from [tiny-voca](https://huggingface.co/n4ze3m/tiny-voca) (Apache 2.0); see `models/NOTICE`. The tiny-voca engine in `vendor/tiny-voca` is Apache 2.0; see `vendor/tiny-voca/NOTICE`.
