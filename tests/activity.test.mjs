@@ -28,8 +28,8 @@ test('shell commands that write files are writing', () => {
 
 test('everything else is running', () => {
   for (const c of ['npm test', 'node --test tests/*.test.mjs', 'cat x | node script.js', 'git commit -m "cat file"',
-    'git checkout -b new', 'git branch -D old', 'find . -name "*.tmp" -delete', 'find . -exec rm {} \\;',
-    'cat $(ls)', 'echo `whoami`', 'npm test > out.txt', 'cd /w', 'rm -rf build', 'grep x a && make'])
+    'git checkout -b new', 'git branch -D old', 'find . -exec rm {} \\;', 'rm -rf build && npm test',
+    'cat $(ls)', 'echo `whoami`', 'npm test > out.txt', 'cd /w', 'grep x a && make'])
     assert.equal(bash(c), 'run', c);
 });
 
@@ -39,4 +39,13 @@ test('Codex and OpenCode shell inputs are read too', () => {
   assert.equal(activityOf('shell', { command: ['ls', '-la'] }), 'read');
   assert.equal(activityOf('bash', { command: 'echo x > y' }), 'write');
   assert.equal(activityOf('local_shell', { command: ['bash', '-lc', 'npm test'] }), 'run');
+});
+
+test('deleting files is deleting', () => {
+  for (const c of ['rm notes.txt', 'rm -rf build', 'cd /w && rm -f a b', 'rmdir old', 'git rm -q x.js', 'git clean -fd',
+    'find . -name "*.tmp" -delete', 'ls x && rm x', 'rm a.txt 2>/dev/null; echo done > log', '/bin/rm x'])
+    assert.equal(bash(c), 'delete', c);
+  assert.equal(activityOf('apply_patch', { input: '*** Begin Patch\n*** Delete File: a.js\n*** Delete File: b.js\n*** End Patch' }), 'delete');
+  assert.equal(activityOf('apply_patch', { input: '*** Begin Patch\n*** Delete File: a.js\n*** Add File: b.js\n+x\n*** End Patch' }), 'write');
+  assert.equal(activityOf('apply_patch', '*** Begin Patch\n*** Update File: a.js\n*** End Patch'), 'write');
 });
