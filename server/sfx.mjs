@@ -57,18 +57,19 @@ function recording(name, rate) {
   return recordings.get(key);
 }
 
-// Each take starts on a whole second. Its release starts 200 ms later.
+// Same layout as the original Button Sounds sprite map: press n starts at n s and plays 190 ms,
+// release n starts 200 ms later and plays 790 ms. Press and release takes are picked independently.
 function button(buf, rate, at, name, takes, gain, releaseAfter) {
   const source = recording(name, rate);
   if (!source) return false;
-  const take = 1 + Math.floor(Math.random() * takes);
+  const pick = () => 1 + Math.floor(Math.random() * takes);
   const mix = (start, dest, duration, volume) => {
     const src = Math.round(start * rate), dst = Math.round(dest * rate);
     const n = Math.min(Math.round(duration * rate), source.length - src, buf.length - dst);
     for (let i = 0; i < n; i++) buf[dst + i] += source[src + i] * volume;
   };
-  mix(take, at, 0.12, gain);
-  if (releaseAfter !== undefined) mix(take + 0.2, at + releaseAfter, 0.12, gain * 0.8);
+  mix(pick(), at, 0.19, gain);
+  if (releaseAfter !== undefined) mix(pick() + 0.2, at + releaseAfter, 0.79, gain);
   return true;
 }
 
@@ -121,7 +122,7 @@ const SOUNDS = {
 };
 
 export function sfx(name, rate, gapSec = 0.1, volume = 0.22) {
-  const buf = new Float32Array(Math.round(rate * 1.5));
+  const buf = new Float32Array(Math.round(rate * 3));
   const len = SOUNDS[name](buf, rate);
   const out = new Int16Array(Math.round((len + gapSec) * rate));
   for (let i = 0; i < Math.min(out.length, buf.length); i++)
@@ -166,15 +167,15 @@ const ring = (b, r, at, f, vol, decay) => {                     // short resonan
   const s0 = Math.round(at * r), n = Math.round(decay * 6 * r); let ph = 0;
   for (let k = 0; k < n && s0 + k < b.length; k++) { ph += TAU * f / r; b[s0 + k] += Math.sin(ph) * vol * Math.min(1, k / 24) * Math.exp(-k / (decay * r)); }
 };
-const keyPress = (b, r, t, v, space = false) => {               // click, bottom-out, then the release click 40 ms later
-  if (button(b, r, t, space ? "hi75-space" : "hi75-soft", space ? 6 : 7, v, 0.04)) return;
+const keyPress = (b, r, t, v, space = false) => {               // click, bottom-out, then the release click 75 ms later
+  if (button(b, r, t, space ? "hi75-space" : "hi75-soft", space ? 6 : 7, v, 0.075)) return;
   bandNoise(b, r, t, 0.006, 1.6 * v, 3000, 9000, 0.0015);
   bandNoise(b, r, t + 0.008, 0.02, 0.9 * v, 600, 4000, 0.004);
   ring(b, r, t + 0.008, space ? 900 : 1800 + Math.random() * 300, (space ? 0.4 : 0.25) * v, space ? 0.01 : 0.004);
   bandNoise(b, r, t + 0.04, 0.005, 0.45 * v, 3000, 9000, 0.0012);
 };
 SOUNDS.type = (b, r) => {
-  const gap = 0.065;
+  const gap = 0.12;
   let t = 0;
   for (const p of [3, "_", 6, "_", 2]) {                        // letters per word; "_" is the space bar
     if (p === "_") { t += gap * 0.5; keyPress(b, r, t, 1.05, true); t += gap * 1.5; continue; }
