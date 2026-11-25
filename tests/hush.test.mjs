@@ -1,9 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-
-process.env.VOICE_MODE_HOME ??= (await import('node:fs')).mkdtempSync((await import('node:path')).join((await import('node:os')).tmpdir(), 'vm-hush-'));
-const { wantsQuiet, wantsVoice } = await import('../codex/lib.mjs');
+import { wantsQuiet, wantsVoice } from '../shared/narration.mjs';
 
 test('plain requests for silence are recognized', () => {
   for (const t of ['stop talking', 'Stop talking.', 'go quiet for now, until all PRs are merged. keep chugging along',
@@ -21,9 +18,4 @@ test('asking for the voice back', () => {
   for (const t of ['you can talk again', 'ok to speak now', 'voice on', 'unmute', 'resume talking']) assert(wantsVoice(t), t);
   assert(!wantsVoice('you can talk again later, for now stop talking'));
   assert(!wantsVoice('talk me through the code'));
-});
-
-test('Claude Code and Codex use the same patterns', () => {
-  const pick = f => readFileSync(new URL(f, import.meta.url), 'utf8').match(/const (HUSH|UNHUSH) = .*/g).map(l => l.replace(/;$/, ''));
-  assert.deepEqual(pick('../hooks/register.ts'), pick('../codex/lib.mjs'));
 });

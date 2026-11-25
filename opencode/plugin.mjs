@@ -9,14 +9,15 @@
 // The narrator is OpenCode's own small model (`small_model` in opencode.json), run in a throwaway session.
 // Install: add this file's path to "plugin" in ~/.config/opencode/opencode.json. Only a default export: OpenCode
 // loads every exported function as a plugin.
-import { request } from "node:http";
-import { spawn } from "node:child_process";
 import { existsSync, writeFileSync, rmSync, appendFileSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
+import { HOME } from "../codex/lib.mjs";
+import * as daemon from "../server/client.mjs";
 import {
-  ROOT, HOME, ACKS, ASK, NARRATOR, FALLBACK, describeCall, activityOf, approvalLine, wentBadly, wantsQuiet, wantsVoice,
-} from "../codex/lib.mjs";
+  ACKS, ASK, NARRATOR, FALLBACK, addSaid, stripTags, pickAck, describeCall, activityOf, approvalLine, questionLine, afterStep,
+  resultTone, wantsQuiet, wantsVoice,
+} from "../shared/narration.mjs";
 
 const SOCK = process.env.VOICE_MODE_OPENCODE_SOCK || join(HOME, "opencode.sock");
 const OFF = join(HOME, "opencode-off");
@@ -24,27 +25,16 @@ const LOG = join(HOME, "opencode-narrator.log");
 const isOff = () => existsSync(OFF);
 const setOff = off => (off ? writeFileSync(OFF, "") : rmSync(OFF, { force: true }));
 const logLine = line => { try { appendFileSync(LOG, `${new Date().toISOString()} ${line}\n`); } catch {} };
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 const NARRATOR_AGENT = process.env.VOICE_MODE_NARRATOR_AGENT ?? "summary";
 // Local models can be slow: more time than Claude Code's 12 s before falling back to the answer's first sentences.
 const NARRATOR_TIMEOUT = Number(process.env.VOICE_MODE_NARRATOR_TIMEOUT_MS) || 20000;
 
 // Requests are tagged with the session and project: the daemon stops only that session's speech, and names the
 // project when the voice switches between sessions.
-function post(path, body = "", tags = {}, timeout = 3000) {
-  const q = new URLSearchParams(Object.entries(tags).filter(([, v]) => v)).toString();
-  if (q && /^\/(say|stop|wait\/start)\b/.test(path)) path += (path.includes("?") ? "&" : "?") + q;
-  return new Promise((done, fail) => {
-    const r = request({ socketPath: SOCK, path, method: "POST", timeout }, res => {
-      let t = "";
-      res.on("data", c => (t += c));
-      res.on("end", () => { try { done(JSON.parse(t)); } catch { done({ ok: false, error: t }); } });
-    });
-    r.on("error", fail);
-    r.on("timeout", () => { r.destroy(); fail(new Error("timeout")); });
-    r.end(body);
-  });
-}
+const post = (path, body = "", tags = {}, timeout = 3000) => daemon.post(SOCK, path, body, tags, timeout);
+const say = (text, tags, { bare = false, kind = "" } = {}) => daemon.say(SOCK, text, { bare, kind, tags });
+// Voice off at once, for every OpenCode session: the off switch is host-wide too.
+const mute = (click = false) => daemon.mute(SOCK, { click });
 const quiet = p => p.catch(() => {});
 
 // Desktop apps on macOS do not get the shell's PATH, so `node` alone is often not found: look where installers put it.
@@ -52,32 +42,7 @@ const NODE = process.env.VOICE_MODE_NODE
   || ["/opt/homebrew/bin/node", "/usr/local/bin/node", join(homedir(), ".volta/bin/node"), "/usr/bin/node"].find(existsSync)
   || "node";
 // OpenCode runs plugins in Bun: the daemon runs under Node, which tiny-voca and sox are tested with.
-async function ensureDaemon() {
-  if (await post("/health", "", {}, 800).then(r => r.ok, () => false)) return;
-  const child = spawn(NODE, [join(ROOT, "server/daemon.mjs"), SOCK], { detached: true, stdio: "ignore", env: process.env });
-  child.on("error", err => logLine(`daemon start FAILED ${NODE}: ${err.message}`));
-  child.unref();
-}
-
-// The daemon needs a second or two to load the model after a start: retry for up to ~8 s.
-async function say(text, tags, { bare = false, kind = "" } = {}) {
-  const path = (bare ? "/say?bare=1" : "/say") + (kind ? `${bare ? "&" : "?"}kind=${kind}` : "");
-  for (let i = 0; ; i++) {
-    try { return await post(path, text, tags); } catch (err) { if (i >= 15) throw err; await sleep(500); }
-  }
-}
-
-// What to say when the user has to answer a question on screen. Mirrors hooks/register.ts.
-function questionLine(args) {
-  const qs = (args?.questions ?? []).slice(0, 2);
-  if (!qs.length) return "I have a question for you on screen.";
-  const one = q => {
-    const opts = (q.options ?? []).map(o => o.label).filter(Boolean);
-    const list = opts.length > 1 ? ` The choices are: ${opts.slice(0, -1).join(", ")}, or ${opts[opts.length - 1]}.` : "";
-    return `${String(q.question ?? "").replace(/\s+/g, " ").trim()}${list}`;
-  };
-  return `${qs.length > 1 ? "Two questions on screen. " : "Question on screen. "}${qs.map(one).join(" Next. ")}`;
-}
+const ensureDaemon = () => daemon.ensureDaemon(SOCK, { node: NODE, onError: err => logLine(`daemon start FAILED ${NODE}: ${err.message}`) });
 
 const failed = out => {
   const m = out?.metadata ?? {};
@@ -110,7 +75,7 @@ const VoiceMode = async ({ client, directory }) => {
   // seconds on a local model). If that agent is missing, the call is retried once without it.
   async function complete(prompt, fallbackModel, agent = NARRATOR_AGENT) {
     const model = smallModel || fallbackModel;
-    let id;
+    let id, timer;
     try {
       const s = await client.session.create({ body: { title: "voice-mode narrator" } });
       id = s.data?.id ?? s.id;
@@ -126,7 +91,7 @@ const VoiceMode = async ({ client, directory }) => {
             parts: [{ type: "text", text: prompt }],
           },
         }),
-        sleep(NARRATOR_TIMEOUT).then(() => ({ timeout: true })),
+        new Promise(done => { timer = setTimeout(done, NARRATOR_TIMEOUT, { timeout: true }); }),
       ]);
       if (r.timeout) return { error: "narrator timed out" };
       if (r.error && agent) return complete(prompt, fallbackModel, "");
@@ -136,11 +101,13 @@ const VoiceMode = async ({ client, directory }) => {
       if (agent) return complete(prompt, fallbackModel, "");
       return { error: String(err?.message || err) };
     } finally {
+      clearTimeout(timer);
       if (id) quiet(Promise.resolve(client.session.delete({ path: { id } })));
     }
   }
 
-  async function narrate(kind, sid, turn, args, bare = false) {
+  // The end line follows the result tone, so it is spoken bare: no sound tags, no opening beep.
+  async function narrate(kind, sid, turn, args) {
     const t0 = Date.now();
     let r = await complete(ASK[kind](...args, said.get(sid) ?? []), turn.model);
     const name = r.model ? `${r.model.providerID}/${r.model.modelID}` : "session model";
@@ -152,8 +119,9 @@ const VoiceMode = async ({ client, directory }) => {
     logLine(`${kind} model=${name} ${Date.now() - t0}ms${stale ? " DROPPED(stale)" : ""} :: ${r.text.replace(/\s+/g, " ")}`);
     if (stale || !r.text) return;
     turn.lastSpoke = Date.now();
-    said.set(sid, [...(said.get(sid) ?? []), r.text.replace(/\[[a-z]+\]/gi, " ").replace(/\s+/g, " ").trim()].slice(-10));
-    await quiet(say(bare ? r.text.replace(/\[[a-z]+\]/gi, " ").trim() : r.text, tagsOf(sid), { bare, kind: kind === "progress" ? "progress" : "" }));
+    said.set(sid, addSaid(said.get(sid) ?? [], r.text));
+    const bare = kind === "end";
+    await quiet(say(bare ? stripTags(r.text) : r.text, tagsOf(sid), { bare, kind: kind === "progress" ? "progress" : "" }));
   }
 
   async function waitStart(sid, turn, text) {
@@ -182,8 +150,9 @@ const VoiceMode = async ({ client, directory }) => {
     } catch (err) { logLine(`end messages FAILED ${err?.message || err}`); }
     if (!answer) return logLine("end SKIPPED no assistant text");
     // The result tone first: the outcome in half a second, then the words.
-    if (Date.now() - turn.t0 > 8000) await quiet(say(wentBadly(answer, turn.steps) ? "[error]" : "[success]", tagsOf(sid), { bare: true }));
-    await narrate("end", sid, turn, [turn.prompt, answer, turn.steps], true);
+    const tone = resultTone(answer, turn.steps, turn.t0);
+    if (tone) await quiet(say(tone, tagsOf(sid), { bare: true }));
+    await narrate("end", sid, turn, [turn.prompt, answer, turn.steps]);
   }
 
   return {
@@ -197,9 +166,9 @@ const VoiceMode = async ({ client, directory }) => {
       voice_off: {
         description: "Turn spoken replies and sounds off. Call it when the user asks to turn voice (voice mode) off, or to mute it.",
         args: {},
-        async execute(_args, ctx) {
+        async execute() {
           setOff(true);
-          await quiet(post("/stop", "", tagsOf(ctx?.sessionID)));
+          await quiet(mute());
           return "Voice off. Replies are text only.";
         },
       },
@@ -234,24 +203,21 @@ const VoiceMode = async ({ client, directory }) => {
       if (!main(sid)) return;
       const prompt = textOf(output.parts);
       await ensureDaemon();
-      await quiet(post("/stop", "", tagsOf(sid)));
       if (wantsQuiet(prompt) && !isOff()) {
         setOff(true);
-        await quiet(post("/wait/stop")); await quiet(post("/hum/off"));
-        await quiet(post("/say?bare=1", "[click]"));            // heard, without words
+        await quiet(mute(true));                                 // then a click: heard, without words
         return;
       }
+      await quiet(post("/stop", "", tagsOf(sid)));
       if (wantsVoice(prompt) && isOff()) setOff(false);
       if (isOff() || !prompt) return;
       const busy = turns.get(sid);
       if (busy && !busy.done) return;                            // a message typed mid-turn joins that turn
       const turn = { prompt, t0: Date.now(), lastSpoke: 0, steps: [], calls: {}, busyUntil: 0, done: false, model: input.model };
       turns.set(sid, turn);
-      let ack = Math.floor(Math.random() * ACKS.length);
-      if (ack === lastAck) ack = (ack + 1) % ACKS.length;
-      lastAck = ack;
+      lastAck = pickAck(lastAck);
       await quiet(post("/hum/on"));
-      await quiet(say(`[beep] ${ACKS[ack]}`, tagsOf(sid)));
+      await quiet(say(`[beep] ${ACKS[lastAck]}`, tagsOf(sid)));
     },
 
     "tool.execute.before": async (input, output) => {
@@ -270,14 +236,10 @@ const VoiceMode = async ({ client, directory }) => {
       const started = turn.calls[input.callID] ?? Date.now();
       delete turn.calls[input.callID];
       const step = describeCall(input.tool, input.args) + (failed(output) ? " (failed)" : "");
-      turn.steps = [...turn.steps, step].slice(-12);
+      const now = Date.now(), { event: happened, due } = afterStep(turn, step, started, now);
       if (isOff() || input.tool === "question") return;
-      const now = Date.now(), took = Math.round((now - started) / 1000);
       // A long step just finished: a heavier sound, and a short spoken note if nothing was said lately.
-      const happened = took >= 30 ? `${step} (took ${took} seconds)` : undefined;
-      if (happened) quiet(post("/say?bare=1", "[thunk]"));
-      const silent = now - Math.max(turn.lastSpoke, turn.t0);
-      const due = happened ? silent > 45000 : now - turn.t0 > 45000 && silent > 120000;
+      if (happened) quiet(post("/say?bare=1", "[thunk]", tagsOf(sid)));
       if (due && now > turn.busyUntil) {
         turn.busyUntil = now + 15000;
         void narrate("progress", sid, turn, [turn.prompt, turn.steps, happened]);
