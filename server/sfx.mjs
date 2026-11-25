@@ -167,8 +167,9 @@ const ring = (b, r, at, f, vol, decay) => {                     // short resonan
   const s0 = Math.round(at * r), n = Math.round(decay * 6 * r); let ph = 0;
   for (let k = 0; k < n && s0 + k < b.length; k++) { ph += TAU * f / r; b[s0 + k] += Math.sin(ph) * vol * Math.min(1, k / 24) * Math.exp(-k / (decay * r)); }
 };
-const keyPress = (b, r, t, v, space = false) => {               // click, bottom-out, then the release click 75 ms later
-  if (button(b, r, t, space ? "hi75-space" : "hi75-soft", space ? 6 : 7, v, 0.075)) return;
+const keyPress = (b, r, t, v, space = false) => {               // press, then release after a 60 to 110 ms hold (space: 80 to 130 ms)
+  const hold = (space ? 0.08 : 0.06) + Math.random() * 0.05;
+  if (button(b, r, t, space ? "hi75-space" : "hi75-soft", space ? 6 : 7, v, hold)) return;
   bandNoise(b, r, t, 0.006, 1.6 * v, 3000, 9000, 0.0015);
   bandNoise(b, r, t + 0.008, 0.02, 0.9 * v, 600, 4000, 0.004);
   ring(b, r, t + 0.008, space ? 900 : 1800 + Math.random() * 300, (space ? 0.4 : 0.25) * v, space ? 0.01 : 0.004);
