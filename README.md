@@ -97,9 +97,11 @@ They use a fake narrator and audio socket; no model calls or audio playback.
 - `server/daemon.mjs`:
   - Keeps the model loaded and splits text into sentences and sound tags.
   - Makes the speech and plays everything in order through one `sox play` stream.
-  - Answers `POST /say`, `/stop`, `/hum/on`, `/hum/off`, `/wait/start`, `/wait/stop`, `/quit` and `/health` over a Unix socket. A new daemon for the same session asks the old one to quit, and the old one finishes any speech in flight first.
+  - Answers `POST /say`, `/stop`, `/mute`, `/hum/on`, `/hum/off`, `/activity`, `/wait/start`, `/wait/stop`, `/quit` and `/health` over a Unix socket. A new daemon for the same session asks the old one to quit, and the old one finishes any speech in flight first.
 - `server/floor.mjs`: one voice at a time across every session on the machine (see below).
 - `server/sfx.mjs`: makes the robot sounds.
+- `server/client.mjs`: posts to the daemon and starts it, for Codex and OpenCode.
+- `shared/narration.mjs`: the narrator prompts and helpers that all three hosts share. It has no imports, so Claude Code's sandbox can load it.
 
 ### Several sessions at once
 
@@ -119,9 +121,8 @@ Codex runs each hook as its own short process and gives plugins no model call, s
 
 - `.codex-plugin/plugin.json` declares six command hooks (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `Stop`) that run `codex/hook.mjs`, and an MCP server, `codex/mcp.mjs`.
 - One daemon serves every Codex session, on `~/.voice-mode/codex.sock`. Turn state is kept in small files in `~/.voice-mode`.
-- The narrator runs a small OpenAI model through `codex exec` (see the Codex section above). The "got it" line at the start is picked at random from a short list of fixed phrases in `codex/hook.mjs`, so it plays at once. If the narrator fails, the end summary falls back to the answer's first two sentences.
+- The narrator runs a small OpenAI model through `codex exec` (see the Codex section above). The "got it" line at the start is picked at random from a short list of fixed phrases in `shared/narration.mjs`, so it plays at once. If the narrator fails, the end summary falls back to the answer's first two sentences.
 - Codex has no plugin slash commands. To turn voice on or off, ask Codex ("voice off"): it calls the `voice_mode` tool. The `voice_mode` tool runs without an approval prompt.
-- The narrator prompts in `codex/lib.mjs` copy the ones in `hooks/register.ts`. Change both together.
 
 ### Environment overrides
 

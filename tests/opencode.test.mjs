@@ -104,7 +104,8 @@ test('subagent and narrator sessions stay silent', () => fixture(async ({ calls,
 test('"stop talking" mutes; "you can talk again" unmutes', () => fixture(async ({ calls, send, event }) => {
   await send('s7', 'Stop talking please');
   assert(existsSync(join(home, 'opencode-off')));
-  assert(!calls.some(([p, t]) => p.startsWith('/say') && t !== '[click]'));
+  assert(calls.some(([p]) => p === '/mute?click=1&session=s7&label=my-app'));
+  assert(!calls.some(([p]) => p.startsWith('/say')));
   calls.length = 0;
   await send('s7', 'Next task');
   await event('session.idle', { sessionID: 's7' });

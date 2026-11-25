@@ -3,9 +3,10 @@
 // Progress narration runs in a detached copy (`node hook.mjs narrate`).
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
+import { HOME, post, say, setSession, ensureDaemon, isOff, setOff, loadTurn, saveTurn, logLine, narrate, narrateLater } from "./lib.mjs";
 import {
-  HOME, post, say, setSession, ensureDaemon, isOff, setOff, wantsQuiet, wantsVoice, loadTurn, saveTurn, describeCall, activityOf, approvalLine, wentBadly, narrate, narrateLater, ACKS,
-} from "./lib.mjs";
+  ACKS, pickAck, wantsQuiet, wantsVoice, describeCall, activityOf, approvalLine, afterStep, resultTone,
+} from "../shared/narration.mjs";
 
 const quiet = p => p.catch(() => {});
 
@@ -23,7 +24,7 @@ function failedResult(res) {
 async function main() {
   if (process.argv[2] === "narrate") {
     const j = JSON.parse(process.env.VOICE_MODE_JOB || "{}");
-    return narrate(j.kind, j.sid, j.turnId, j.args, j.bare);
+    return narrate(j.kind, j.sid, j.turnId, j.args);
   }
   const e = await readStdin();
   if (process.env.VOICE_MODE_DEBUG) try { appendFileSync(join(HOME, "codex-hooks.log"), JSON.stringify(e) + "\n"); } catch {}
@@ -39,8 +40,7 @@ async function main() {
     const text = String(e.prompt ?? "");
     if (wantsQuiet(text) && !isOff()) {
       setOff(true);
-      await quiet(post("/stop")); await quiet(post("/wait/stop")); await quiet(post("/hum/off"));
-      await quiet(post("/say?bare=1", "[click]"));                // heard, without words
+      await quiet(post("/mute?click=1"));                         // a click: heard, without words
       return;
     }
     if (wantsVoice(text) && isOff()) setOff(false);
@@ -53,11 +53,9 @@ async function main() {
     const prompt = String(e.prompt ?? "");
     if (!prompt.trim()) return;
     const id = String(e.turn_id ?? Date.now());
-    // A random acknowledgment, never the same one twice in a row.
-    const last = loadTurn(sid)?.ack;
-    let ack = Math.floor(Math.random() * ACKS.length);
-    if (ack === last) ack = (ack + 1) % ACKS.length;
-    saveTurn(sid, { id, prompt, t0: Date.now(), lastSpoke: 0, steps: [], busyUntil: 0, calls: {}, ack, cwd: e.cwd });
+    const ack = pickAck(loadTurn(sid)?.ack);
+    // The prompt is cut to what the narrator reads (at most 1,500 characters), so each hook's file stays small.
+    saveTurn(sid, { id, prompt: prompt.slice(0, 1500), t0: Date.now(), lastSpoke: 0, steps: [], busyUntil: 0, calls: {}, ack, cwd: e.cwd });
     await quiet(post("/hum/on"));
     await quiet(say(`[beep] ${ACKS[ack]}`));
     return;
@@ -84,13 +82,9 @@ async function main() {
     const started = turn.calls[e.tool_use_id ?? tool] ?? Date.now();
     delete turn.calls[e.tool_use_id ?? tool];
     const step = describeCall(tool, e.tool_input) + (failedResult(e.tool_response) ? " (failed)" : "");
-    turn.steps = [...turn.steps, step].slice(-12);
-    const now = Date.now(), took = Math.round((now - started) / 1000);
+    const now = Date.now(), { event: happened, due } = afterStep(turn, step, started, now);
     // A long step just finished: a heavier sound, and a short spoken note if nothing was said lately.
-    const happened = took >= 30 ? `${step} (took ${took} seconds)` : undefined;
     if (happened) quiet(post("/say?bare=1", "[thunk]"));
-    const silent = now - Math.max(turn.lastSpoke, turn.t0);
-    const due = happened ? silent > 45000 : now - turn.t0 > 45000 && silent > 120000;
     if (due && now > turn.busyUntil) {
       turn.busyUntil = now + 15000;
       narrateLater("progress", sid, turn.id, [turn.prompt, turn.steps, happened]);
@@ -104,15 +98,13 @@ async function main() {
     await quiet(post("/wait/stop"));
     await quiet(post("/hum/off"));
     const answer = String(e.last_assistant_message ?? "").trim();
-    if (!answer) {
-      appendFileSync(join(HOME, "codex-narrator.log"), `${new Date().toISOString()} end SKIPPED missing last_assistant_message\n`);
-      return;
-    }
+    if (!answer) return logLine("end SKIPPED missing last_assistant_message");
     // The result tone first: the outcome in half a second, then the words.
-    if (Date.now() - turn.t0 > 8000) await quiet(say(wentBadly(answer, turn.steps) ? "[error]" : "[success]", true));
+    const tone = resultTone(answer, turn.steps, turn.t0);
+    if (tone) await quiet(say(tone, true));
     // Finish queuing the summary before the Stop hook exits.
-    await narrate("end", sid, turn.id, [turn.prompt, answer, turn.steps], true);
+    await narrate("end", sid, turn.id, [turn.prompt, answer, turn.steps]);
   }
 }
 
-main().catch(err => { try { appendFileSync(join(HOME, "codex-narrator.log"), `${new Date().toISOString()} hook FAILED ${err.message}\n`); } catch {} }).finally(() => process.exit(0));
+main().catch(err => logLine(`hook FAILED ${err.message}`)).finally(() => process.exit(0));

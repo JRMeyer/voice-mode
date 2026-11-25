@@ -4,10 +4,13 @@
 //     Optional tags: kind=progress (a check-in: dropped if the turn ends or it waits over 20 s for another
 //     session's voice), session=<id> (for a scoped /stop), label=<project> (said when the voice switches projects).
 //   POST /stop clears the speech queue and cuts playback; /stop?session=<id> only that session's speech.
+//   POST /mute: voice off at once. Like /stop, and the working sounds and queued check-ins end too; /mute?click=1
+//     then plays a click (heard, without words).
 //   POST /hum/on, /hum/off: a soft "still working" sound every 12 to 20 s. /hum/off also drops queued check-ins.
 //   POST /activity (body: read | write | run | web | think): which sound that is.
 //   POST /wait/start (body: what to say): speak it after a chime, then chime every 30 s until /wait/stop.
 //   POST /quit exits (a newer daemon for the same session asks this of the old one).
+//   POST /health answers { ok: true, queued: <parts waiting> }: a client checks that a daemon is up.
 // Usage: node daemon.mjs <socket path>
 // Env: VOICE_MODE_JS (tiny-voca js folder, default vendor/tiny-voca), VOICE_MODE_MODEL (.gguf), VOICE_MODE_VOICE (default M2), VOICE_MODE_PLAYER (sox play),
 //   VOICE_MODE_LABEL (project name to say; default: the project folder's name).
@@ -25,8 +28,7 @@ const log = (...a) => { try { appendFileSync(SOCK + ".log", `${((Date.now() - T0
 `); } catch {} };
 console.log = log; console.error = log;
 const JS = process.env.VOICE_MODE_JS || join(import.meta.dirname, "../vendor/tiny-voca");
-const BUNDLED = join(import.meta.dirname, "../models/robo-josh.gguf");
-const MODEL = process.env.VOICE_MODE_MODEL || BUNDLED;
+const MODEL = process.env.VOICE_MODE_MODEL || join(import.meta.dirname, "../models/robo-josh.gguf");
 const VOICE = process.env.VOICE_MODE_VOICE || "M2";
 const LABEL = process.env.VOICE_MODE_LABEL || basename(process.env.CLAUDE_PROJECT_DIR || process.cwd());
 const floor = createFloor();
@@ -59,19 +61,16 @@ const SAY_AS = (() => {
 
 // Spoken text never uses contractions. Only the unambiguous ones: "'s" and "'d" stay unless listed.
 const CONTRACTIONS = {
-  "can't": "cannot", "won't": "will not", "shan't": "shall not", "ain't": "is not", "let's": "let us",
+  "can't": "cannot", "won't": "will not", "shan't": "shall not", "ain't": "is not", "let's": "let us", "i'm": "i am",
   "it's": "it is", "that's": "that is", "what's": "what is", "there's": "there is", "here's": "here is",
   "who's": "who is", "where's": "where is", "he's": "he is", "she's": "she is", "how's": "how is",
 };
+const ENDINGS = { "n't": " not", "'ll": " will", "'re": " are", "'ve": " have" };   // the rest: "don't" is "do not"
 const uncontract = t => t
   .replace(/[’]/g, "'")
   .replace(/\b([A-Za-z]+'[A-Za-z]+)\b/g, w => {
-    const lower = w.toLowerCase(), full = CONTRACTIONS[lower]
-      ?? (/n't$/.test(lower) ? lower.replace(/n't$/, " not")
-      : /'ll$/.test(lower) ? lower.replace(/'ll$/, " will")
-      : /'re$/.test(lower) ? lower.replace(/'re$/, " are")
-      : /'ve$/.test(lower) ? lower.replace(/'ve$/, " have")
-      : lower === "i'm" ? "i am" : null);
+    const lower = w.toLowerCase(), end = ENDINGS[lower.slice(-3)];
+    const full = CONTRACTIONS[lower] ?? (end && lower.slice(0, -3) + end);
     if (!full) return w;
     return w[0] === w[0].toUpperCase() ? full[0].toUpperCase() + full.slice(1) : full;
   })
@@ -125,6 +124,9 @@ function stop(session) {
 
 const drop = msg => { queue = queue.filter(p => p.msg !== msg); };
 
+// Text as queue parts: pieces short enough for the model, each tagged with its message.
+const partsOf = (text, msg) => utterancesOf(text, phonemizer, voca.config.max_tokens - 12).map(p => ({ ...p, msg }));
+
 // When the voice switches projects, a message opens with the project name, after its opening sound.
 function announce(msg) {
   if (!msg.speaks) return;
@@ -132,8 +134,7 @@ function announce(msg) {
   if (msg.label && last.label && last.label !== msg.label && Date.now() - last.at < SWITCH_WINDOW) {
     const name = clean(msg.label.replace(/[-_.]+/g, " "));
     const at = queue.findIndex(p => p.msg === msg && !p.sound);
-    if (name && at >= 0) log("announce", name);
-    if (name && at >= 0) queue.splice(at, 0, ...utterancesOf(`In ${name}.`, phonemizer, voca.config.max_tokens - 12).map(p => ({ ...p, msg })));
+    if (name && at >= 0) { log("announce", name); queue.splice(at, 0, ...partsOf(`In ${name}.`, msg)); }
   }
   floor.spoke(msg.label);
 }
@@ -209,16 +210,17 @@ async function pump() {
 
 // Sound tags like [beep] play in place between the spoken pieces.
 const TAG = new RegExp(`\\[(${SOUND_NAMES.join("|")})\\]`, "gi");
+const OPENS_WITH_TAG = new RegExp(`^\\s*${TAG.source}`, "i");
 
 function say(text, { bare = false, kind = "say", session = "", label = LABEL } = {}) {
   // Every message starts with a robot sound unless the caller asked for none.
-  if (!bare && !new RegExp(`^\\s*\\[(${SOUND_NAMES.join("|")})\\]`, "i").test(text)) text = "[beep] " + text;
+  if (!bare && !OPENS_WITH_TAG.test(text)) text = "[beep] " + text;
   const msg = { kind, session, label, priority: PRIORITY[kind] ?? 0, at: Date.now(), maxWait: MAX_WAIT[kind] ?? MAX_WAIT.say, speaks: false };
   const parts = [];
   for (const [i, piece] of text.split(TAG).entries()) {
     if (i % 2) { parts.push({ sound: piece.toLowerCase(), msg }); continue; }
     const t = clean(piece.replace(/\[[^\]]*\]/g, " "));
-    if (t) parts.push(...utterancesOf(t, phonemizer, voca.config.max_tokens - 12).map(p => ({ ...p, msg })));
+    if (t) parts.push(...partsOf(t, msg));
   }
   if (!parts.length) return 0;
   const last = parts.findLast(p => !p.sound);
@@ -251,6 +253,11 @@ function humOff() {
   if (!hum) return;
   log("working sounds off");
   clearTimeout(hum); hum = null;
+}
+// The turn ended, or the voice went off: no more working sounds, and its queued check-ins are stale now.
+function endWork() {
+  humOff();
+  queue = queue.filter(p => p.msg.kind !== "progress" || (p.msg.started && p.msg === current));
 }
 function setActivity(kind) {
   if (!(kind in ACTIVITY_SOUND) || kind === activity) return;
@@ -285,11 +292,12 @@ createServer((req, res) => {
     try {
       if (path === "/say") out.sentences = say(body, { ...tags, bare: q.get("bare") === "1", kind: q.get("kind") === "progress" ? "progress" : "say" });
       else if (path === "/stop") { log("stop", tags.session); stop(tags.session); waitStop(); }
-      else if (path === "/hum/on") humOn();
-      else if (path === "/hum/off") {                            // the turn ended: its queued check-ins are stale now
-        humOff();
-        queue = queue.filter(p => p.msg.kind !== "progress" || (p.msg.started && p.msg === current));
+      else if (path === "/mute") {
+        log("mute", tags.session); stop(tags.session); waitStop(); endWork();
+        if (q.get("click") === "1") say("[click]", { ...tags, bare: true });   // heard, without words
       }
+      else if (path === "/hum/on") humOn();
+      else if (path === "/hum/off") endWork();
       else if (path === "/activity") setActivity(body.trim());
       else if (path === "/wait/start") waitStart(body, tags);
       else if (path === "/wait/stop") waitStop();
@@ -316,4 +324,4 @@ function bye() {
 let replaced = false;
 const quitByPeer = () => { replaced = true; bye(); };
 process.on("exit", () => floor.release());
-process.on("SIGTERM", () => { stop(); bye(); }); process.on("SIGINT", () => { stop(); bye(); }); process.on("SIGHUP", () => { stop(); bye(); });
+for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(sig, () => { stop(); bye(); });

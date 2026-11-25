@@ -23,23 +23,25 @@ function tone(buf, rate, at, dur, f, { wave = "round", vol = 1, att = 0.004, rel
   }
 }
 
-// Adds filtered noise (one-pole low-pass at `cut` Hz, optionally high-passed) with an envelope function.
-function noise(buf, rate, at, dur, { cut = 3000, high = false, vol = 1, env = () => 1 } = {}) {
-  const n = Math.round(dur * rate), s0 = Math.round(at * rate), g = 1 - Math.exp(-TAU * cut / rate);
-  let lp = 0;
+// Adds noise band-passed from lo to hi Hz by two one-pole filters (without lo: low-passed only; without hi:
+// high-passed only), shaped by env(x, k): x runs from 0 to 1 over the sound, k counts samples.
+function noise(buf, rate, at, dur, { lo = 0, hi = Infinity, vol = 1, env = () => 1 } = {}) {
+  const n = Math.round(dur * rate), s0 = Math.round(at * rate);
+  const gh = 1 - Math.exp(-TAU * hi / rate), gl = 1 - Math.exp(-TAU * lo / rate);
+  let a = 0, c = 0;                                             // a: the noise low-passed at hi; c: a low-passed at lo
   for (let k = 0; k < n && s0 + k < buf.length; k++) {
-    const w = Math.random() * 2 - 1; lp += g * (w - lp);
-    buf[s0 + k] += (high ? w - lp : lp) * env(k / n) * vol;
+    a += gh * (Math.random() * 2 - 1 - a); c += gl * (a - c);
+    buf[s0 + k] += (a - c) * env(k / n, k) * vol;
   }
 }
 
 function click(buf, rate, at, vol = 1) {
-  noise(buf, rate, at, 0.012, { cut: 6000, vol: 1.6 * vol, env: x => Math.exp(-x * 9) });
+  noise(buf, rate, at, 0.012, { hi: 6000, vol: 1.6 * vol, env: x => Math.exp(-x * 9) });
   tone(buf, rate, at, 0.02, 2400, { wave: "sine", vol: 0.35 * vol, att: 0.0005, rel: 0.018 });
-  noise(buf, rate, at + 0.028, 0.008, { cut: 4000, vol: 0.7 * vol, env: x => Math.exp(-x * 9) });   // the bounce
+  noise(buf, rate, at + 0.028, 0.008, { hi: 4000, vol: 0.7 * vol, env: x => Math.exp(-x * 9) });   // the bounce
 }
 
-function servo(buf, rate, at, dur, [f0, f1] = [95, 150]) {
+function servo(buf, rate, at, dur, [f0, f1] = [95, 150], vol = 1) {
   // motor hum + gear whine + brushy noise, swelling in and out
   const env = x => Math.sin(Math.PI * Math.min(1, x * 1.15)) ** 0.6;
   const n = Math.round(dur * rate), s0 = Math.round(at * rate);
@@ -48,9 +50,9 @@ function servo(buf, rate, at, dur, [f0, f1] = [95, 150]) {
     const x = k / n, fr = f0 * Math.pow(f1 / f0, Math.sin(x * Math.PI / 2));
     ph += TAU * fr / rate;
     const wob = 1 + 0.15 * Math.sin(TAU * 23 * k / rate);
-    buf[s0 + k] += (waves.buzz(ph) * 0.8 + Math.sin(ph * 8) * 0.16) * wob * env(x);
+    buf[s0 + k] += (waves.buzz(ph) * 0.8 + Math.sin(ph * 8) * 0.16) * wob * env(x) * vol;
   }
-  noise(buf, rate, at, dur, { cut: 2500, high: true, vol: 0.35, env });
+  noise(buf, rate, at, dur, { lo: 2500, vol: 0.35 * vol, env });
 }
 
 const SOUNDS = {
@@ -77,8 +79,6 @@ const SOUNDS = {
   },
 };
 
-export const SOUND_NAMES = Object.keys(SOUNDS);
-
 export function sfx(name, rate, gapSec = 0.1, volume = 0.22) {
   const buf = new Float32Array(Math.round(rate * 1.5));
   const len = SOUNDS[name](buf, rate);
@@ -95,7 +95,6 @@ SOUNDS.chime = (b, r) => {
 };
 // A heavier event sound: a long step finished.
 SOUNDS.thunk = (b, r) => { tone(b, r, 0, 0.12, [160, 90], { wave: "round", vol: 1.1, att: 0.002, rel: 0.09 }); click(b, r, 0, 0.8); return 0.14; };
-SOUND_NAMES.push("chime", "thunk");
 
 // "Still working": two or three soft random beeps and boops, quieter than the other sounds.
 SOUNDS.working = (b, r) => {
@@ -108,28 +107,18 @@ SOUNDS.working = (b, r) => {
   }
   return t;
 };
-SOUND_NAMES.push("working");
 
 // Activity flavours of the "still working" sound.
 SOUNDS.riffle = (b, r) => {                                     // reading: thumbing through a Rolodex, about 20 thin cards
-  const card = at => {                                         // one card: a short burst of papery noise, 1.5 to 7 kHz
-    const s0 = Math.round(at * r), n = Math.round(0.018 * r), gh = 1 - Math.exp(-TAU * 7000 / r), gl = 1 - Math.exp(-TAU * 1500 / r);
-    const vol = 0.35 + Math.random() * 0.2;
-    let lo = 0, hi = 0;
-    for (let k = 0; k < n && s0 + k < b.length; k++) {
-      lo += gh * (Math.random() * 2 - 1 - lo); hi += gl * (lo - hi);
-      const x = k / n; b[s0 + k] += (lo - hi) * vol * Math.min(1, x * 12) * Math.exp(-x * 5);
-    }
-  };
+  const card = at => noise(b, r, at, 0.018, {                  // one card: a short burst of papery noise, 1.5 to 7 kHz
+    lo: 1500, hi: 7000, vol: 0.35 + Math.random() * 0.2, env: x => Math.min(1, x * 12) * Math.exp(-x * 5),
+  });
   for (let i = 0; i < 20; i++) card(i * 0.028 + Math.random() * 0.006);
   return 0.58;
 };
 // Writing: fast typing on a clicky mechanical keyboard (blue switches), three short words.
-const bandNoise = (b, r, at, dur, vol, lo, hi, decay) => {    // noise band-passed lo..hi Hz, decaying
-  const s0 = Math.round(at * r), n = Math.round(dur * r), gh = 1 - Math.exp(-TAU * hi / r), gl = 1 - Math.exp(-TAU * lo / r);
-  let a = 0, c = 0;
-  for (let k = 0; k < n && s0 + k < b.length; k++) { a += gh * (Math.random() * 2 - 1 - a); c += gl * (a - c); b[s0 + k] += (a - c) * vol * Math.exp(-k / (decay * r)); }
-};
+const bandNoise = (b, r, at, dur, vol, lo, hi, decay) =>       // noise band-passed lo..hi Hz, decaying
+  noise(b, r, at, dur, { lo, hi, vol, env: (_, k) => Math.exp(-k / (decay * r)) });
 const ring = (b, r, at, f, vol, decay) => {                     // short resonance of keycap and case
   const s0 = Math.round(at * r), n = Math.round(decay * 6 * r); let ph = 0;
   for (let k = 0; k < n && s0 + k < b.length; k++) { ph += TAU * f / r; b[s0 + k] += Math.sin(ph) * vol * Math.min(1, k / 24) * Math.exp(-k / (decay * r)); }
@@ -149,22 +138,15 @@ SOUNDS.type = (b, r) => {
   }
   return t + 0.03;
 };
-SOUNDS.whir = (b, r) => {                                       // running something: a short soft motor whir
-  const tmp = new Float32Array(b.length); servo(tmp, r, 0, 0.35, [110, 170]);
-  for (let i = 0; i < b.length; i++) b[i] += tmp[i] * 0.45;
-  return 0.36;
-};
-SOUND_NAMES.push("riffle", "type", "whir");
+SOUNDS.whir = (b, r) => { servo(b, r, 0, 0.35, [110, 170], 0.45); return 0.36; };   // running something: a short soft motor whir
 
 // Web search or browsing: soft satellite telemetry, four low beeps over faint radio static.
 SOUNDS.radio = (b, r) => {
-  const n = Math.round(1.05 * r), gh = 1 - Math.exp(-TAU * 3000 / r), gl = 1 - Math.exp(-TAU * 300 / r);
-  let lo = 0, hi = 0;
-  for (let k = 0; k < n && k < b.length; k++) {               // static: noise band-passed 300 Hz to 3 kHz, faded in and out
-    lo += gh * (Math.random() * 2 - 1 - lo); hi += gl * (lo - hi);
-    b[k] += (lo - hi) * 0.07 * Math.min(1, k / (0.04 * r), (n - k) / (0.06 * r));
-  }
+  const n = Math.round(1.05 * r);                              // static: noise band-passed 300 Hz to 3 kHz, faded in and out
+  noise(b, r, 0, 1.05, { lo: 300, hi: 3000, vol: 0.07, env: (_, k) => Math.min(1, k / (0.04 * r), (n - k) / (0.06 * r)) });
   for (let i = 0; i < 4; i++) tone(b, r, i * 0.25, 0.11, 1050, { wave: "sine", vol: 0.35, att: 0.005, rel: 0.02 });
   return 1.05;
 };
-SOUND_NAMES.push("radio");
+
+// Every sound above, by name: the tags like [beep] that a spoken line can hold.
+export const SOUND_NAMES = Object.keys(SOUNDS);

@@ -87,8 +87,8 @@ test('speech and stop are tagged with the session and project',async()=>fixture(
 test('"stop talking" turns the voice off; "you can talk again" turns it back on',async()=>fixture(async({home,calls,hook})=>{
   await hook({hook_event_name:'UserPromptSubmit',prompt:'Stop talking, just work.'});
   assert(existsSync(join(home,'codex-off')));
-  assert(calls.some(([path])=>path.startsWith('/stop')));
-  assert(!calls.some(([path,text])=>path.startsWith('/say')&&text!=='[click]'));
+  assert(calls.some(([path])=>path.startsWith('/mute?click=1')));
+  assert(!calls.some(([path])=>path.startsWith('/say')));
   calls.length=0;
   await hook({hook_event_name:'UserPromptSubmit',prompt:'Next task'});
   assert.equal(calls.length,0);
