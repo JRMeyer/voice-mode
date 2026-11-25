@@ -219,7 +219,7 @@ export const register: Register = on => {
     const main = any.agentId === undefined
     const asks = main && (e.tool === 'AskUserQuestion' || e.tool === 'ExitPlanMode') && !(await isOff($))
     if (asks) waitStart($, sock, wait, e.tool === 'ExitPlanMode' ? 'My plan is on screen. Approve it when you are ready.' : questionLine(any))
-    const kind = main && !asks && !turn.done ? activityOf(e.tool) : undefined
+    const kind = main && !asks && !turn.done ? activityOf(e.tool, any) : undefined
     if (kind) post($, sock, '/activity', kind).catch(() => {})
     const started = Date.now()
     let res

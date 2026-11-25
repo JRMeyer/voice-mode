@@ -76,16 +76,106 @@ export const describeCall = (tool, input) => `${String(tool).replace(/^mcp__/, "
 // Web search, fetching a page, or driving a browser (built-in web tools, or browser and Chrome MCP tools).
 const WEB = /^(web_search|web_fetch|web_run|webfetch|websearch|codesearch)$|^mcp__.*(chrome|browser|playwright|puppeteer)/i;
 
-// What kind of work a tool call is, for the "still working" sound.
-export function activityOf(tool) {
+const SHELL = /^(bash|shell|exec_command|local_shell|unified_exec)$/i;
+
+// What kind of work a tool call is, for the "still working" sound. A shell command is looked at too:
+// `sed -n`, `cat`, `grep` and the like are reading; a redirect into a file or `sed -i` is writing.
+export function activityOf(tool, input) {
   if (WEB.test(tool)) return "web";
   if (/^(read|grep|glob|ls|list|list_dir|view_image|notebookread|toolsearch|listmcpresourcestool|readmcpresourcetool)$/i.test(tool)) return "read";
   if (/^(apply_patch|patch|edit|multiedit|write|notebookedit)$/i.test(tool)) return "write";
+  if (SHELL.test(tool)) return shellActivity(commandOf(input));
   return "run";
 }
 
+// The command text of a shell call: a string, or an argv such as ["bash", "-lc", "cat x"].
+function commandOf(input) {
+  const o = input && typeof input === "object" ? input : {};
+  const c = typeof input === "string" ? input : o.command ?? o.cmd;
+  if (Array.isArray(c)) return /^-l?c$/.test(c[1]) ? String(c.at(-1)) : c.join(" ");
+  return typeof c === "string" ? c : "";
+}
+
+// Commands that only look at files or print something.
+const READERS = new Set(["cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "rg", "ag", "ls", "tree", "wc",
+  "file", "stat", "du", "pwd", "echo", "printf", "jq", "diff", "cmp", "awk", "sort", "uniq", "cut", "tr", "column", "nl",
+  "which", "type", "realpath", "dirname", "basename", "fd", "find", "sed", "git", "tee"]);
+const NEUTRAL = new Set(["cd", "pushd", "popd", "true", ":"]);
+const GIT_READS = /^(log|diff|show|status|blame|branch|ls-files|grep|rev-parse|describe|shortlog|remote)$/;
+
+// Splits a command into simple commands at unquoted ; & | and newlines. Each is a list of words and
+// redirect operators ({ op }). After a heredoc only the first line counts: the rest is its body.
+function simpleCommands(cmd) {
+  if (cmd.includes("<<")) cmd = cmd.split("\n")[0];
+  const segs = [[]];
+  let w = null, q = null;
+  const push = () => { if (w !== null) segs.at(-1).push(w); w = null; };
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (q) {
+      if (c === q) q = null;
+      else w += c === "\\" && q === '"' ? (cmd[++i] ?? "") : c;
+      continue;
+    }
+    if (c === "'" || c === '"') { q = c; w ??= ""; continue; }
+    if (c === "\\") { w = (w ?? "") + (cmd[++i] ?? ""); continue; }
+    if (c === ">" || c === "<" || (c === "&" && cmd[i + 1] === ">")) {
+      if (/^\d$/.test(w ?? "")) w = null;                         // 2>/dev/null: the 2 is a file descriptor
+      push();
+      let op = c;
+      while (/[<>&|]/.test(cmd[i + 1] ?? "") && !(op.includes(">") && cmd[i + 1] === "|")) op += cmd[++i];
+      segs.at(-1).push({ op });
+      continue;
+    }
+    if (c === ";" || c === "|" || c === "&" || c === "\n") { push(); if (segs.at(-1).length) segs.push([]); continue; }
+    if (/\s/.test(c)) { push(); continue; }
+    w = (w ?? "") + c;
+  }
+  push();
+  return segs.filter(s => s.length);
+}
+
+// read, write or run for one simple command.
+function simpleActivity(seg) {
+  const words = [];
+  let writes = false;
+  for (let i = 0; i < seg.length; i++) {
+    const t = seg[i];
+    if (typeof t === "string") { words.push(t); continue; }
+    const target = seg[i + 1];
+    if (typeof target === "string") i++;
+    if (t.op.includes(">") && !t.op.endsWith("&") && target !== "/dev/null") writes = true;
+  }
+  while (/^[A-Za-z_]\w*=/.test(words[0] ?? "")) words.shift();    // FOO=1 cmd
+  const name = (words[0] ?? "").split("/").at(-1), args = words.slice(1);
+  let kind;
+  if (!name || NEUTRAL.has(name)) kind = "neutral";
+  else if (!READERS.has(name)) kind = "run";
+  else if (name === "sed") kind = args.some(a => /^-[a-zA-Z]*i|^--in-place/.test(a)) ? "write" : "read";
+  else if (name === "tee") kind = args.some(a => !a.startsWith("-") && a !== "/dev/null") ? "write" : "read";
+  else if (name === "find") kind = args.some(a => /^-(exec|execdir|ok|okdir|delete|fprint\w*)$/.test(a)) ? "run" : "read";
+  else if (name === "git") {
+    const sub = args.find((a, i) => !a.startsWith("-") && !/^-[Cc]$/.test(args[i - 1] ?? "")) ?? "";
+    const changes = /^(branch|remote)$/.test(sub)                // git branch -D x, git remote add ...
+      && args.some(a => /^(-[dDmMcC]|--delete|--move|add|remove|rm|rename|set-url)$/.test(a));
+    kind = GIT_READS.test(sub) && !changes ? "read" : "run";
+  } else kind = "read";
+  if (writes) return kind === "run" ? "run" : "write";
+  return kind;
+}
+
+// read when every part only reads, write when the parts read or write files and one writes, otherwise run.
+// Command substitution ($(...) or backticks) could run anything, so it counts as running.
+function shellActivity(cmd) {
+  if (!cmd.trim() || /\$\(|`/.test(cmd)) return "run";
+  const kinds = simpleCommands(cmd).map(simpleActivity);
+  if (kinds.includes("run")) return "run";
+  if (kinds.includes("write")) return "write";
+  return kinds.includes("read") ? "read" : "run";
+}
+
 export function approvalLine(tool) {
-  const what = /^(bash|shell|exec_command|local_shell|unified_exec)$/i.test(tool) ? "to run a command"
+  const what = SHELL.test(tool) ? "to run a command"
     : activityOf(tool) === "write" ? "to change a file"
     : /^mcp__/.test(tool) || /^web_/i.test(tool) || /^(WebFetch|WebSearch)$/.test(tool) ? "to use an outside tool" : "for the next step";
   return `I need your approval ${what}. It is on screen.`;
