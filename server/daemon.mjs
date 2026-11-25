@@ -294,7 +294,7 @@ createServer((req, res) => {
       else if (path === "/stop") { log("stop", tags.session); stop(tags.session); waitStop(); }
       else if (path === "/mute") {
         log("mute"); stop(); waitStop(); humOff();
-        if (q.get("click") === "1") say("[click]", { bare: true });            // heard, without words
+        if (q.get("click") === "1") say("[toggleoff]", { bare: true });            // heard, without words
       }
       else if (path === "/hum/on") humOn();
       else if (path === "/hum/off") endWork();
