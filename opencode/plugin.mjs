@@ -225,7 +225,7 @@ const VoiceMode = async ({ client, directory }) => {
       if (!main(input.sessionID) || !turn || turn.done || isOff()) return;
       turn.calls[input.callID] = Date.now();
       if (input.tool === "question") return waitStart(input.sessionID, turn, questionLine(output?.args));
-      await quiet(post("/activity", activityOf(input.tool)));
+      await quiet(post("/activity", activityOf(input.tool, output?.args)));
     },
 
     "tool.execute.after": async (input, output) => {

@@ -73,7 +73,7 @@ async function main() {
   if (event === "PreToolUse") {
     turn.calls[e.tool_use_id ?? tool] = Date.now();
     saveTurn(sid, turn);
-    return quiet(post("/activity", activityOf(tool)));
+    return quiet(post("/activity", activityOf(tool, e.tool_input)));
   }
 
   if (event === "PostToolUse") {

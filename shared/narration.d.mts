@@ -17,7 +17,7 @@ export function wantsVoice(text: string): boolean;
 export const ACKS: string[];
 export function pickAck(last?: number): number;
 export function describeCall(tool: string, input: unknown): string;
-export function activityOf(tool: string): 'read' | 'write' | 'run' | 'web';
+export function activityOf(tool: string, input?: unknown): 'read' | 'write' | 'run' | 'web';
 export function approvalLine(tool: string): string;
 export function questionLine(input: unknown): string;
 export function afterStep(
