@@ -170,6 +170,14 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // Compacting the conversation: a trash compactor. Not for a subagent's own transcript, nor for a summary
+  // computed ahead of time in the background ("precompute").
+  on('session.compact', async ($, e, next) => {
+    if (e.agentId === undefined && e.trigger !== 'precompute' && !(await isOff($)))
+      say($, sock, '[compact]', true).catch(() => {})
+    return next(e)
+  })
+
   on('turn.start', async ($, e, next) => {
     const res = await next(e)
     if (e.agentId !== undefined || !e.text.trim() || (await isOff($))) return res
