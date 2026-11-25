@@ -4,7 +4,7 @@ A plugin for Claude Code, Codex and OpenCode that lets the agent talk to you out
 
 - **Voice:** runs on your own computer with [tiny-voca](https://github.com/n4ze3m/tiny-voca). It ships a custom tiny-voca voice, `models/robo-josh.gguf`, and tiny-voca's JavaScript engine in `vendor/tiny-voca`, so there is nothing else to download.
 - **Persona:** a friendly 1980s movie robot. It speaks in short, clipped sentences.
-- **Robot sounds:** tags in the spoken text play in place, used sparingly (one per line, plus one for a real result): `[beep] [boop] [click] [servo] [think] [success] [error] [boot]`. The sounds are made from tones and noise in `server/sfx.mjs`; there are no audio files.
+- **Robot sounds:** tags in the spoken text play in place, used sparingly (one per line, plus one for a real result): `[beep] [boop] [click] [servo] [think] [success] [error] [boot]`. The robot tones are synthesized in `server/sfx.mjs`. Typing, mute confirmation, and the long-step thunk use the bundled Button Sounds recordings in `assets/button-sounds/`.
 - **What you hear:** a short acknowledgment as soon as you press Enter, a check-in on long turns, and at the end a short summary of what Claude did and what it found, with the next step. Each narrator call is logged to `narrator.log` in the plugin's data folder with latency, tokens and the spoken text.
 - **Audio cues:**
   - While Claude works, a short soft sound plays every 12 to 20 seconds, so silence means it is done or waiting on you. It tells you what kind of work: a soft Rolodex riffle for reading, clicky mechanical keyboard typing for writing, a motor whir for running a command, soft radio beeps over static for web search or browsing, beeps and boops for thinking.

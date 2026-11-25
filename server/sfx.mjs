@@ -1,4 +1,7 @@
-// Synthesized 1980s movie-robot sounds: no samples, just tones and noise. sfx() returns 16-bit mono PCM.
+// Robot cues and sampled button sounds. sfx() returns 16-bit mono PCM.
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 // Aim: mechanical (servos, relays, computer chatter) more than video game. Generic, made from scratch.
 
 const TAU = Math.PI * 2;
@@ -35,6 +38,40 @@ function noise(buf, rate, at, dur, { lo = 0, hi = Infinity, vol = 1, env = () =>
   }
 }
 
+// Decode each bundled WAV once at the model's playback rate, using the existing SoX installation.
+const sox = ["/opt/homebrew/bin/sox", "/usr/local/bin/sox", "/usr/bin/sox"].find(existsSync) || "sox";
+const recordings = new Map();
+function recording(name, rate) {
+  const key = name + ":" + rate;
+  if (!recordings.has(key)) {
+    const path = join(import.meta.dirname, "../assets/button-sounds", name + ".wav");
+    try {
+      const raw = execFileSync(sox, [path, "-t", "f32", "-c", "1", "-r", String(rate), "-"],
+        { stdio: ["ignore", "pipe", "pipe"], maxBuffer: rate * 4 * 9 });
+      recordings.set(key, new Float32Array(raw.buffer, raw.byteOffset, raw.length / 4));
+    } catch (err) {
+      console.error("Could not load button sound", name, err.message);
+      recordings.set(key, null);
+    }
+  }
+  return recordings.get(key);
+}
+
+// Each take starts on a whole second. Its release starts 200 ms later.
+function button(buf, rate, at, name, takes, gain, releaseAfter) {
+  const source = recording(name, rate);
+  if (!source) return false;
+  const take = 1 + Math.floor(Math.random() * takes);
+  const mix = (start, dest, duration, volume) => {
+    const src = Math.round(start * rate), dst = Math.round(dest * rate);
+    const n = Math.min(Math.round(duration * rate), source.length - src, buf.length - dst);
+    for (let i = 0; i < n; i++) buf[dst + i] += source[src + i] * volume;
+  };
+  mix(take, at, 0.12, gain);
+  if (releaseAfter !== undefined) mix(take + 0.2, at + releaseAfter, 0.12, gain * 0.8);
+  return true;
+}
+
 function click(buf, rate, at, vol = 1) {
   noise(buf, rate, at, 0.012, { hi: 6000, vol: 1.6 * vol, env: x => Math.exp(-x * 9) });
   tone(buf, rate, at, 0.02, 2400, { wave: "sine", vol: 0.35 * vol, att: 0.0005, rel: 0.018 });
@@ -61,6 +98,10 @@ const SOUNDS = {
   success: (b, r) => { tone(b, r, 0, 0.08, 880); tone(b, r, 0.09, 0.2, 1320, { vib: 0.01, rel: 0.08 }); return 0.29; },
   error: (b, r) => { tone(b, r, 0, 0.32, [190, 150], { wave: "square" }); return 0.32; },
   click: (b, r) => { click(b, r, 0); return 0.05; },
+  toggleoff: (b, r) => {
+    if (!button(b, r, 0, "guitar-toggle-off", 6, 1, 0.09)) click(b, r, 0);
+    return 0.21;
+  },
   servo: (b, r) => { servo(b, r, 0, 0.45); click(b, r, 0.46, 0.6); return 0.5; },
   think: (b, r) => {                                           // computer chatter: fast random blips with gaps
     let t = 0;
@@ -94,7 +135,9 @@ SOUNDS.chime = (b, r) => {
   bell(0, 988); bell(0.22, 740); return 1.15;
 };
 // A heavier event sound: a long step finished.
-SOUNDS.thunk = (b, r) => { tone(b, r, 0, 0.12, [160, 90], { wave: "round", vol: 1.1, att: 0.002, rel: 0.09 }); click(b, r, 0, 0.8); return 0.14; };
+SOUNDS.thunk = (b, r) => {
+  if (button(b, r, 0, "low-thumps", 6, 2)) return 0.12;
+  tone(b, r, 0, 0.12, [160, 90], { wave: "round", vol: 1.1, att: 0.002, rel: 0.09 }); click(b, r, 0, 0.8); return 0.14; };
 
 // "Still working": two or three soft random beeps and boops, quieter than the other sounds.
 SOUNDS.working = (b, r) => {
@@ -116,7 +159,7 @@ SOUNDS.riffle = (b, r) => {                                     // reading: thum
   for (let i = 0; i < 20; i++) card(i * 0.028 + Math.random() * 0.006);
   return 0.58;
 };
-// Writing: fast typing on a clicky mechanical keyboard (blue switches), three short words.
+// Writing: three short words on the Hi75, with synthesized keys as a fallback.
 const bandNoise = (b, r, at, dur, vol, lo, hi, decay) =>       // noise band-passed lo..hi Hz, decaying
   noise(b, r, at, dur, { lo, hi, vol, env: (_, k) => Math.exp(-k / (decay * r)) });
 const ring = (b, r, at, f, vol, decay) => {                     // short resonance of keycap and case
@@ -124,6 +167,7 @@ const ring = (b, r, at, f, vol, decay) => {                     // short resonan
   for (let k = 0; k < n && s0 + k < b.length; k++) { ph += TAU * f / r; b[s0 + k] += Math.sin(ph) * vol * Math.min(1, k / 24) * Math.exp(-k / (decay * r)); }
 };
 const keyPress = (b, r, t, v, space = false) => {               // click, bottom-out, then the release click 40 ms later
+  if (button(b, r, t, space ? "hi75-space" : "hi75-soft", space ? 6 : 7, v, 0.04)) return;
   bandNoise(b, r, t, 0.006, 1.6 * v, 3000, 9000, 0.0015);
   bandNoise(b, r, t + 0.008, 0.02, 0.9 * v, 600, 4000, 0.004);
   ring(b, r, t + 0.008, space ? 900 : 1800 + Math.random() * 300, (space ? 0.4 : 0.25) * v, space ? 0.01 : 0.004);
@@ -136,7 +180,7 @@ SOUNDS.type = (b, r) => {
     if (p === "_") { t += gap * 0.5; keyPress(b, r, t, 1.05, true); t += gap * 1.5; continue; }
     for (let i = 0; i < p; i++) { keyPress(b, r, t, (i === 0 ? 1 : 0.8) + Math.random() * 0.1); t += gap * (0.85 + Math.random() * 0.3); }
   }
-  return t + 0.03;
+  return t + 0.11;
 };
 SOUNDS.whir = (b, r) => { servo(b, r, 0, 0.35, [110, 170], 0.45); return 0.36; };   // running something: a short soft motor whir
 
