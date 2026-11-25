@@ -204,6 +204,15 @@ SOUNDS.shred = (b, r) => {
   for (let i = 0; i < n; i++) b[i] += source[i] * 1.5;
   return n / r;
 };
+// Compacting the conversation: a recorded kitchen trash compactor (assets/trash-compactor, CC0), with a
+// synthesized ram as the fallback: a laboring motor, then the crunch.
+SOUNDS.compact = (b, r) => {
+  const source = recording("trash-compactor/trash-compactor", r);
+  if (!source) { servo(b, r, 0, 1.1, [70, 55], 0.9); noise(b, r, 0.7, 0.4, { lo: 200, hi: 3000, vol: 0.6, env: x => Math.exp(-x * 4) }); return 1.15; }
+  const n = Math.min(source.length, b.length);
+  for (let i = 0; i < n; i++) b[i] += source[i] * 1.5;
+  return n / r;
+};
 // The synthesized shredder. The motor spins up, the blades bite and the motor bogs down as the paper
 // tears through, then it clears, picks up speed again and spins down.
 function shredSynth(b, r) {

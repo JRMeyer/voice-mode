@@ -1,6 +1,6 @@
 {
   "name": "voice-mode",
-  "version": "0.5.12",
+  "version": "0.5.13",
   "description": "Lets Codex talk to you out loud in a local text-to-speech voice, with robot sounds while it works.",
   "author": {
     "name": "JRMeyer"

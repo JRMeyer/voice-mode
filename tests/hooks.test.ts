@@ -107,3 +107,16 @@ test('after voice off, the end of a wait does not restart the working sound', as
   expect(posts.map(p => p[0])).toEqual(['/hum/on', '/wait/start', '/mute'])
   await done()
 })
+
+test('compacting the main conversation plays the trash compactor; a precompute or a subagent does not', async ($, on) => {
+  memStore(on, { welcomed: true })
+  const messages = [{ role: 'user', text: 'summary', toolUses: [] }]
+  on('session.compact', (() => ({ messages })) as never)
+  const { posts, done } = await start($, on)
+  await ($ as any).session.compact({ trigger: 'precompute', messages })
+  await ($ as any).session.compact({ trigger: 'auto', agentId: 'a1', messages })
+  expect(posts.filter(([, b]) => b === '[compact]')).toEqual([])
+  await ($ as any).session.compact({ trigger: 'manual', messages })
+  expect(posts.filter(([, b]) => b === '[compact]')).toEqual([['/say?bare=1', '[compact]']])
+  await done()
+})
