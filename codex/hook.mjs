@@ -3,7 +3,7 @@
 // Progress narration runs in a detached copy (`node hook.mjs narrate`).
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
-import { HOME, post, say, setSession, ensureDaemon, isOff, setOff, loadTurn, saveTurn, logLine, narrate, narrateLater } from "./lib.mjs";
+import { HOME, post, say, mute, setSession, ensureDaemon, isOff, setOff, loadTurn, saveTurn, logLine, narrate, narrateLater } from "./lib.mjs";
 import {
   ACKS, pickAck, wantsQuiet, wantsVoice, describeCall, activityOf, approvalLine, afterStep, resultTone,
 } from "../shared/narration.mjs";
@@ -40,7 +40,7 @@ async function main() {
     const text = String(e.prompt ?? "");
     if (wantsQuiet(text) && !isOff()) {
       setOff(true);
-      await quiet(post("/mute?click=1"));                         // a click: heard, without words
+      await quiet(mute(true));                                    // then a click: heard, without words
       return;
     }
     if (wantsVoice(text) && isOff()) setOff(false);
@@ -84,7 +84,7 @@ async function main() {
     const step = describeCall(tool, e.tool_input) + (failedResult(e.tool_response) ? " (failed)" : "");
     const now = Date.now(), { event: happened, due } = afterStep(turn, step, started, now);
     // A long step just finished: a heavier sound, and a short spoken note if nothing was said lately.
-    if (happened) quiet(post("/say?bare=1", "[thunk]"));
+    if (happened) await quiet(post("/say?bare=1", "[thunk]"));     // awaited: the hook exits right after
     if (due && now > turn.busyUntil) {
       turn.busyUntil = now + 15000;
       narrateLater("progress", sid, turn.id, [turn.prompt, turn.steps, happened]);

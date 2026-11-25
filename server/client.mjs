@@ -9,7 +9,7 @@ const DAEMON = fileURLToPath(new URL("./daemon.mjs", import.meta.url));
 // POST to the daemon. tags ({ session, label }) are added to the paths that use them.
 export function post(sock, path, body = "", tags = {}, timeout = 3000) {
   const q = new URLSearchParams(Object.entries(tags).filter(([, v]) => v)).toString();
-  if (q && /^\/(say|stop|mute|wait\/start)\b/.test(path)) path += (path.includes("?") ? "&" : "?") + q;
+  if (q && /^\/(say|stop|wait\/start)\b/.test(path)) path += (path.includes("?") ? "&" : "?") + q;
   return new Promise((done, fail) => {
     const r = request({ socketPath: sock, path, method: "POST", timeout }, res => {
       let t = "";
@@ -31,6 +31,16 @@ export async function say(sock, text, { bare = false, kind = "", tags = {} } = {
     try { return await post(sock, path, text, tags); }
     catch (err) { if (i >= 15) throw err; await sleep(500); }
   }
+}
+
+// Voice off at once, for every session this daemon serves (the off switch is host-wide): speech, working sounds,
+// the wait chime and queued check-ins end. click: then a click, heard without words.
+// A daemon from 0.5.7 or before, still running after an update, has no /mute: the same through the calls it knows.
+export async function mute(sock, { click = false } = {}) {
+  const r = await post(sock, click ? "/mute?click=1" : "/mute");
+  if (r.ok || r.error !== "unknown path") return r;
+  for (const path of ["/stop", "/wait/stop", "/hum/off"]) await post(sock, path);
+  return click ? post(sock, "/say?bare=1", "[click]") : { ok: true };
 }
 
 // Start a daemon on sock unless one already answers there.

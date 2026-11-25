@@ -11,11 +11,15 @@ process.env.VOICE_MODE_NODE = 'true';   // never start a real daemon from a test
 const { default: VoiceMode } = await import('../opencode/plugin.mjs');
 
 // A fake daemon socket and a fake OpenCode client. The narrator session answers with a fixed line.
-async function fixture(run, { narratorFails = false } = {}) {
+async function fixture(run, { narratorFails = false, oldDaemon = false } = {}) {
   const calls = [];
   const server = createServer((req, res) => {
     let body = ''; req.on('data', c => body += c);
-    req.on('end', () => { calls.push([req.url, body]); res.end(JSON.stringify({ ok: true, sentences: 1 })); });
+    req.on('end', () => {
+      calls.push([req.url, body]);
+      // oldDaemon: one from 0.5.7, which has no /mute
+      res.end(JSON.stringify(oldDaemon && req.url.startsWith('/mute') ? { ok: false, error: 'unknown path' } : { ok: true, sentences: 1 }));
+    });
   });
   await new Promise(r => server.listen(join(home, 'opencode.sock'), r));
   const prompts = [], deleted = [];
@@ -104,8 +108,7 @@ test('subagent and narrator sessions stay silent', () => fixture(async ({ calls,
 test('"stop talking" mutes; "you can talk again" unmutes', () => fixture(async ({ calls, send, event }) => {
   await send('s7', 'Stop talking please');
   assert(existsSync(join(home, 'opencode-off')));
-  assert(calls.some(([p]) => p === '/mute?click=1&session=s7&label=my-app'));
-  assert(!calls.some(([p]) => p.startsWith('/say')));
+  assert.deepEqual(calls.map(([p]) => p).filter(p => p !== '/health'), ['/mute?click=1']);   // no /stop first: the mute stops it all
   calls.length = 0;
   await send('s7', 'Next task');
   await event('session.idle', { sessionID: 's7' });
@@ -141,5 +144,14 @@ test('narrator calls run without thinking; the user\'s chat is untouched', () =>
   assert.deepEqual(narr.options.chat_template_kwargs, { enable_thinking: false });
   assert.equal(narr.maxOutputTokens, 400);
 }));
+
+test('voice off silences a daemon from 0.5.7 too, which has no /mute', () => fixture(async ({ calls, hooks, send }) => {
+  await send('s11', 'Stop talking.');
+  assert.deepEqual(calls.map(([p]) => p).filter(p => p !== '/health'), ['/mute?click=1', '/stop', '/wait/stop', '/hum/off', '/say?bare=1']);
+  assert.equal(calls.at(-1)[1], '[click]');
+  calls.length = 0;
+  await hooks.tool.voice_off.execute({}, { sessionID: 's11' });
+  assert.deepEqual(calls.map(([p]) => p), ['/mute', '/stop', '/wait/stop', '/hum/off']);
+}, { oldDaemon: true }));
 
 test.after(() => rmSync(home, { recursive: true, force: true }));

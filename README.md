@@ -100,7 +100,7 @@ They use a fake narrator and audio socket; no model calls or audio playback.
   - Answers `POST /say`, `/stop`, `/mute`, `/hum/on`, `/hum/off`, `/activity`, `/wait/start`, `/wait/stop`, `/quit` and `/health` over a Unix socket. A new daemon for the same session asks the old one to quit, and the old one finishes any speech in flight first.
 - `server/floor.mjs`: one voice at a time across every session on the machine (see below).
 - `server/sfx.mjs`: makes the robot sounds.
-- `server/client.mjs`: posts to the daemon and starts it, for Codex and OpenCode.
+- `server/client.mjs`: posts to the daemon, mutes it (an older daemon still running after an update too) and starts it, for Codex and OpenCode.
 - `shared/narration.mjs`: the narrator prompts and helpers that all three hosts share. It has no imports, so Claude Code's sandbox can load it.
 
 ### Several sessions at once
@@ -111,9 +111,9 @@ Every daemon on the machine, Claude Code and Codex alike, shares one lock file, 
 - A session that needs you (a permission prompt or a question) goes ahead of routine narration.
 - When the voice switches to another project, the line starts with the project name, such as "In my app." With one session running you never hear it.
 - Stale audio is dropped instead of queued: working sounds never wait for another session, and a check-in that waits over 20 seconds, or whose turn has ended, does not play.
-- A new message, and `/voice-mode off`, stop only that session's speech.
+- A new message stops only that session's speech. Turning the voice off stops all sound from that session's daemon at once. In Codex and OpenCode one daemon serves every session, so that is all of them.
 
-Run the checks with `node --test tests/*.test.mjs`.
+Run the checks with `node --test tests/*.test.mjs`. The Claude Code hooks have their own, run with `claude plugin test .`.
 
 ### Codex
 

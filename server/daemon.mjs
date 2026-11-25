@@ -4,8 +4,8 @@
 //     Optional tags: kind=progress (a check-in: dropped if the turn ends or it waits over 20 s for another
 //     session's voice), session=<id> (for a scoped /stop), label=<project> (said when the voice switches projects).
 //   POST /stop clears the speech queue and cuts playback; /stop?session=<id> only that session's speech.
-//   POST /mute: voice off at once. Like /stop, and the working sounds and queued check-ins end too; /mute?click=1
-//     then plays a click (heard, without words).
+//   POST /mute: voice off at once, for every session this daemon serves (the off switch is host-wide): speech,
+//     working sounds, the wait chime and queued check-ins end. /mute?click=1 then plays a click (heard, without words).
 //   POST /hum/on, /hum/off: a soft "still working" sound every 12 to 20 s. /hum/off also drops queued check-ins.
 //   POST /activity (body: read | write | run | web | think): which sound that is.
 //   POST /wait/start (body: what to say): speak it after a chime, then chime every 30 s until /wait/stop.
@@ -254,7 +254,7 @@ function humOff() {
   log("working sounds off");
   clearTimeout(hum); hum = null;
 }
-// The turn ended, or the voice went off: no more working sounds, and its queued check-ins are stale now.
+// The turn ended: no more working sounds, and its queued check-ins are stale now.
 function endWork() {
   humOff();
   queue = queue.filter(p => p.msg.kind !== "progress" || (p.msg.started && p.msg === current));
@@ -293,8 +293,8 @@ createServer((req, res) => {
       if (path === "/say") out.sentences = say(body, { ...tags, bare: q.get("bare") === "1", kind: q.get("kind") === "progress" ? "progress" : "say" });
       else if (path === "/stop") { log("stop", tags.session); stop(tags.session); waitStop(); }
       else if (path === "/mute") {
-        log("mute", tags.session); stop(tags.session); waitStop(); endWork();
-        if (q.get("click") === "1") say("[click]", { ...tags, bare: true });   // heard, without words
+        log("mute"); stop(); waitStop(); humOff();
+        if (q.get("click") === "1") say("[click]", { bare: true });            // heard, without words
       }
       else if (path === "/hum/on") humOn();
       else if (path === "/hum/off") endWork();

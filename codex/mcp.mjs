@@ -2,7 +2,7 @@
 // when the user says "voice off" or "voice on".
 import { createInterface } from "node:readline";
 import { readFileSync } from "node:fs";
-import { ensureDaemon, setOff, post } from "./lib.mjs";
+import { ensureDaemon, setOff, mute } from "./lib.mjs";
 
 // The plugin's own version, for the server info Codex shows.
 const { version } = JSON.parse(readFileSync(new URL("../.codex-plugin/plugin.json", import.meta.url), "utf8"));
@@ -21,7 +21,7 @@ async function callTool(name, args = {}) {
   if (name === "voice_mode") {
     setOff(!args.on);
     if (args.on) await ensureDaemon();
-    else await post("/mute").catch(() => {});
+    else await mute().catch(() => {});
     return text(args.on ? "Voice on. You will hear spoken replies as Codex works." : "Voice off. Replies are text only.");
   }
   return text(`Unknown tool ${name}.`, true);

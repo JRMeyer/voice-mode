@@ -30,6 +30,8 @@ export function setSession(sid, cwd) {
 }
 export const post = (path, body = "", timeout = 3000) => daemon.post(SOCK, path, body, TAGS, timeout);
 export const say = (text, bare = false, kind = "") => daemon.say(SOCK, text, { bare, kind, tags: TAGS });
+// Voice off at once, for every Codex session: the off switch is host-wide too.
+export const mute = (click = false) => daemon.mute(SOCK, { click });
 // Start the daemon unless one already answers. It outlives the hook that started it.
 export const ensureDaemon = () => daemon.ensureDaemon(SOCK);
 
@@ -86,11 +88,12 @@ export async function narrate(kind, sid, turnId, args) {
     logLine(`${kind} model=${NARRATOR_MODEL} FAILED ${r.error} ${Date.now() - t0}ms (fallback line)`);
     r = { text: FALLBACK[kind](...args) };
   }
+  // The prompt hook, another process, can save a newer turn at any moment: read, check and write with nothing between.
   const current = loadTurn(sid);
   const stale = current?.id !== turnId || (kind === "progress" && current?.done) || isOff();
+  if (!stale && r.text && current) saveTurn(sid, { ...current, lastSpoke: Date.now() });
   logLine(`${kind} model=${NARRATOR_MODEL} ${Date.now() - t0}ms${stale ? " DROPPED(stale)" : ""} :: ${r.text.replace(/\s+/g, " ")}`);
   if (stale || !r.text) return;
-  if (current) saveTurn(sid, { ...current, lastSpoke: Date.now() });
   rememberSaid(sid, r.text);
   const bare = kind === "end";
   try {

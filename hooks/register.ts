@@ -82,9 +82,17 @@ function waitStop($: EngineInterface, sock: string | undefined, w: Wait, turn: T
   if (!turn.done) post($, sock, '/hum/on').catch(() => {})
 }
 
+// Voice off at once. A permission chime still pending never starts, and the end of a wait does not restart the hum.
+function mute($: EngineInterface, sock: string | undefined, w: Wait, path: string) {
+  w.pending++
+  w.on = false
+  post($, sock, path).catch(() => {})
+}
+
 export const register: Register = on => {
   let sock: string | undefined
   let sid = 'x'
+  let owner = ''                    // this process's token in the store's owner-<sid>
   const wait: Wait = { pending: 0, on: false }
   on('session.start', async ($, e, next) => {
     const started = await next(e)
@@ -96,6 +104,7 @@ export const register: Register = on => {
     sock = `${data}/voice-${id}.sock`
     const path = sock
     const me = Math.random().toString(36).slice(2, 10)
+    owner = me
     await $.store.set(`owner-${id}`, me)
     log.path = `${data}/narrator.log`
     void (async () => {
@@ -130,13 +139,14 @@ export const register: Register = on => {
   // A new message cuts off any speech still playing, mid-turn too. A message asking for silence ("stop talking",
   // "go quiet") turns the voice off like /voice-mode off; "you can talk again" turns it back on.
   on('prompt.submit', async ($, e, next) => {
-    post($, sock, '/stop').catch(() => {})
-    if (!e.command && !e.isMeta) {
-      if (wantsQuiet(e.text) && !(await isOff($))) {
-        await $.store.set(OFF_KEY, true)
-        post($, sock, '/mute?click=1').catch(() => {})   // a click: heard, without words
-        $.ui.status('voice off')
-      } else if (wantsVoice(e.text) && (await isOff($))) {
+    const words = !e.command && !e.isMeta
+    if (words && wantsQuiet(e.text) && !(await isOff($))) {
+      await $.store.set(OFF_KEY, true)
+      mute($, sock, wait, '/mute?click=1')   // stops all of it, then a click: heard, without words
+      $.ui.status('voice off')
+    } else {
+      post($, sock, '/stop').catch(() => {})
+      if (words && wantsVoice(e.text) && (await isOff($))) {
         await $.store.set(OFF_KEY, false)
         $.ui.status(undefined)
         if (e.turnId && !turn.done) post($, sock, '/hum/on').catch(() => {})
@@ -151,9 +161,11 @@ export const register: Register = on => {
   const TURN_KEY = () => `turn-${sid}`
 
   // The store outlives the session: on exit, drop this session's keys so they do not pile up. After a /clear or a
-  // resume this process goes on with the same daemon, so it keeps them.
+  // resume this process goes on with the same daemon, so it keeps them. If another process resumed this session
+  // meanwhile, the keys are its own now: they stay.
   on('session.end', async ($, e, next) => {
-    if (e.reason !== 'clear' && e.reason !== 'resume')
+    if (e.reason !== 'clear' && e.reason !== 'resume' && owner
+      && (await $.store.get(`owner-${sid}`).catch(() => undefined)) === owner)
       await Promise.all([`owner-${sid}`, TURN_KEY()].map(k => $.store.delete(k))).catch(() => {})
     return next(e)
   })
@@ -191,7 +203,7 @@ export const register: Register = on => {
       const mine = ++wait.pending
       void (async () => {
         await $.clock.sleep(1500)
-        if (wait.pending === mine) waitStart($, sock, wait, approvalLine(any.tool_name))
+        if (wait.pending === mine && !(await isOff($))) waitStart($, sock, wait, approvalLine(any.tool_name))
       })()
     }
     return next(e)
@@ -279,7 +291,7 @@ export const register: Register = on => {
     const arg = e.args.trim().toLowerCase()
     const off = arg === 'off' ? true : arg === 'on' ? false : !(await isOff($))
     await $.store.set(OFF_KEY, off)
-    if (off) post($, sock, '/mute').catch(() => {})
+    if (off) mute($, sock, wait, '/mute')
     $.ui.status(off ? 'voice off' : undefined)
     return { text: off ? 'Voice off. Claude will reply in text only.' : 'Voice on. Claude talks to you as it works.' }
   })

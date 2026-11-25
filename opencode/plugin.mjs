@@ -33,6 +33,8 @@ const NARRATOR_TIMEOUT = Number(process.env.VOICE_MODE_NARRATOR_TIMEOUT_MS) || 2
 // project when the voice switches between sessions.
 const post = (path, body = "", tags = {}, timeout = 3000) => daemon.post(SOCK, path, body, tags, timeout);
 const say = (text, tags, { bare = false, kind = "" } = {}) => daemon.say(SOCK, text, { bare, kind, tags });
+// Voice off at once, for every OpenCode session: the off switch is host-wide too.
+const mute = (click = false) => daemon.mute(SOCK, { click });
 const quiet = p => p.catch(() => {});
 
 // Desktop apps on macOS do not get the shell's PATH, so `node` alone is often not found: look where installers put it.
@@ -164,9 +166,9 @@ const VoiceMode = async ({ client, directory }) => {
       voice_off: {
         description: "Turn spoken replies and sounds off. Call it when the user asks to turn voice (voice mode) off, or to mute it.",
         args: {},
-        async execute(_args, ctx) {
+        async execute() {
           setOff(true);
-          await quiet(post("/mute", "", tagsOf(ctx?.sessionID)));
+          await quiet(mute());
           return "Voice off. Replies are text only.";
         },
       },
@@ -201,12 +203,12 @@ const VoiceMode = async ({ client, directory }) => {
       if (!main(sid)) return;
       const prompt = textOf(output.parts);
       await ensureDaemon();
-      await quiet(post("/stop", "", tagsOf(sid)));
       if (wantsQuiet(prompt) && !isOff()) {
         setOff(true);
-        await quiet(post("/mute?click=1", "", tagsOf(sid)));     // a click: heard, without words
+        await quiet(mute(true));                                 // then a click: heard, without words
         return;
       }
+      await quiet(post("/stop", "", tagsOf(sid)));
       if (wantsVoice(prompt) && isOff()) setOff(false);
       if (isOff() || !prompt) return;
       const busy = turns.get(sid);
@@ -237,7 +239,7 @@ const VoiceMode = async ({ client, directory }) => {
       const now = Date.now(), { event: happened, due } = afterStep(turn, step, started, now);
       if (isOff() || input.tool === "question") return;
       // A long step just finished: a heavier sound, and a short spoken note if nothing was said lately.
-      if (happened) quiet(post("/say?bare=1", "[thunk]"));
+      if (happened) quiet(post("/say?bare=1", "[thunk]", tagsOf(sid)));
       if (due && now > turn.busyUntil) {
         turn.busyUntil = now + 15000;
         void narrate("progress", sid, turn, [turn.prompt, turn.steps, happened]);

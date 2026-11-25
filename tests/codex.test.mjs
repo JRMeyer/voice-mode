@@ -6,12 +6,12 @@ import { join, resolve } from 'node:path';
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 
-async function fixture(run) {
+async function fixture(run, { old = false } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'vm-'));
   const calls = [];
   const server = createServer((req, res) => {
     let body = ''; req.on('data', c => body += c);
-    req.on('end', () => { calls.push([req.url, body]); res.end(JSON.stringify({ok:true,sentences:1})); });
+    req.on('end', () => { calls.push([req.url, body]); res.end(JSON.stringify(old && req.url.startsWith('/mute') ? {ok:false,error:'unknown path'} : {ok:true,sentences:1})); });   // old: a 0.5.7 daemon, which has no /mute
   });
   await new Promise(r => server.listen(join(home, 'codex.sock'), r));
   const narrator = join(home, 'narrator');
@@ -87,12 +87,26 @@ test('speech and stop are tagged with the session and project',async()=>fixture(
 test('"stop talking" turns the voice off; "you can talk again" turns it back on',async()=>fixture(async({home,calls,hook})=>{
   await hook({hook_event_name:'UserPromptSubmit',prompt:'Stop talking, just work.'});
   assert(existsSync(join(home,'codex-off')));
-  assert(calls.some(([path])=>path.startsWith('/mute?click=1')));
-  assert(!calls.some(([path])=>path.startsWith('/say')));
+  assert.deepEqual(calls.map(([path])=>path),['/mute?click=1']);
   calls.length=0;
   await hook({hook_event_name:'UserPromptSubmit',prompt:'Next task'});
   assert.equal(calls.length,0);
   await hook({hook_event_name:'UserPromptSubmit',prompt:'You can talk again. Next task',turn_id:'t3'});
   assert(!existsSync(join(home,'codex-off')));
   assert(calls.some(([path])=>path.startsWith('/say')));
+}));
+
+test('"stop talking" silences a daemon from 0.5.7 too, which has no /mute',async()=>fixture(async({calls,hook})=>{
+  await hook({hook_event_name:'UserPromptSubmit',prompt:'Stop talking.'});
+  assert.deepEqual(calls.map(([path])=>path),['/mute?click=1','/stop','/wait/stop','/hum/off','/say?bare=1']);
+  assert.equal(calls.at(-1)[1],'[click]');
+},{old:true}));
+
+test('a long step ends with a thunk, sent before the hook exits',async()=>fixture(async({home,calls,hook})=>{
+  await hook({hook_event_name:'UserPromptSubmit',prompt:'Run the build'});
+  await hook({hook_event_name:'PreToolUse',tool_name:'Bash',tool_use_id:'c1',tool_input:{command:'make'}});
+  const file=join(home,'codex-turn-test.json'), turn=JSON.parse(readFileSync(file,'utf8'));
+  turn.calls.c1-=31000; writeFileSync(file,JSON.stringify(turn));   // the step started 31 s ago
+  await hook({hook_event_name:'PostToolUse',tool_name:'Bash',tool_use_id:'c1',tool_input:{command:'make'},tool_response:{exit_code:0}});
+  assert(calls.some(([path,text])=>path.startsWith('/say?bare=1')&&text==='[thunk]'));
 }));
