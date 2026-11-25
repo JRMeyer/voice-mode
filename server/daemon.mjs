@@ -7,7 +7,7 @@
 //   POST /mute: voice off at once, for every session this daemon serves (the off switch is host-wide): speech,
 //     working sounds, the wait chime and queued check-ins end. /mute?click=1 then plays a click (heard, without words).
 //   POST /hum/on, /hum/off: a soft "still working" sound every 12 to 20 s. /hum/off also drops queued check-ins.
-//   POST /activity (body: read | write | run | web | think): which sound that is.
+//   POST /activity (body: read | write | delete | run | web | think): which sound that is.
 //   POST /wait/start (body: what to say): speak it after a chime, then chime every 30 s until /wait/stop.
 //   POST /quit exits (a newer daemon for the same session asks this of the old one).
 //   POST /health answers { ok: true, queued: <parts waiting> }: a client checks that a daemon is up.
@@ -234,8 +234,9 @@ function say(text, { bare = false, kind = "say", session = "", label = LABEL } =
 }
 
 // ---- "still working": a short sound every 12 to 20 s while Claude works, flavoured by what it is doing ----
-// reading -> riffle, writing -> type, running a command -> whir, web search or browsing -> radio, otherwise (thinking) -> beeps and boops.
-const ACTIVITY_SOUND = { read: "riffle", write: "type", run: "whir", web: "radio", think: "working" };
+// reading -> riffle, writing -> type, deleting -> shred, running a command -> whir, web search or browsing -> radio,
+// otherwise (thinking) -> beeps and boops.
+const ACTIVITY_SOUND = { read: "riffle", write: "type", delete: "shred", run: "whir", web: "radio", think: "working" };
 let hum = null, activity = "think", lastWork = 0;
 function workSound() {
   if (busy || queue.length || floor.busyElsewhere()) return;   // never under another session's voice
@@ -262,7 +263,7 @@ function endWork() {
 function setActivity(kind) {
   if (!(kind in ACTIVITY_SOUND) || kind === activity) return;
   activity = kind;
-  // A change to reading, writing, running or the web plays its sound right away, at most every 6 s.
+  // A change to reading, writing, deleting, running or the web plays its sound right away, at most every 6 s.
   if (hum && kind !== "think" && Date.now() - lastWork > 6000) workSound();
 }
 

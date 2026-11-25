@@ -38,13 +38,13 @@ function noise(buf, rate, at, dur, { lo = 0, hi = Infinity, vol = 1, env = () =>
   }
 }
 
-// Decode each bundled WAV once at the model's playback rate, using the existing SoX installation.
+// Decode each bundled WAV (a path under assets/, without .wav) once at the model's playback rate, using the existing SoX installation.
 const sox = ["/opt/homebrew/bin/sox", "/usr/local/bin/sox", "/usr/bin/sox"].find(existsSync) || "sox";
 const recordings = new Map();
 function recording(name, rate) {
   const key = name + ":" + rate;
   if (!recordings.has(key)) {
-    const path = join(import.meta.dirname, "../assets/button-sounds", name + ".wav");
+    const path = join(import.meta.dirname, "../assets", name + ".wav");
     try {
       const raw = execFileSync(sox, [path, "-t", "f32", "-c", "1", "-r", String(rate), "-"],
         { stdio: ["ignore", "pipe", "pipe"], maxBuffer: rate * 4 * 9 });
@@ -100,7 +100,7 @@ const SOUNDS = {
   error: (b, r) => { tone(b, r, 0, 0.32, [190, 150], { wave: "square" }); return 0.32; },
   click: (b, r) => { click(b, r, 0); return 0.05; },
   toggleoff: (b, r) => {
-    if (!button(b, r, 0, "guitar-toggle-off", 6, 1, 0.09)) click(b, r, 0);
+    if (!button(b, r, 0, "button-sounds/guitar-toggle-off", 6, 1, 0.09)) click(b, r, 0);
     return 0.21;
   },
   servo: (b, r) => { servo(b, r, 0, 0.45); click(b, r, 0.46, 0.6); return 0.5; },
@@ -137,7 +137,7 @@ SOUNDS.chime = (b, r) => {
 };
 // A heavier event sound: a long step finished.
 SOUNDS.thunk = (b, r) => {
-  if (button(b, r, 0, "low-thumps", 6, 2)) return 0.12;
+  if (button(b, r, 0, "button-sounds/low-thumps", 6, 2)) return 0.12;
   tone(b, r, 0, 0.12, [160, 90], { wave: "round", vol: 1.1, att: 0.002, rel: 0.09 }); click(b, r, 0, 0.8); return 0.14; };
 
 // "Still working": two or three soft random beeps and boops, quieter than the other sounds.
@@ -169,7 +169,7 @@ const ring = (b, r, at, f, vol, decay) => {                     // short resonan
 };
 const keyPress = (b, r, t, v, space = false) => {               // press, then release after a 60 to 110 ms hold (space: 80 to 130 ms)
   const hold = (space ? 0.08 : 0.06) + Math.random() * 0.05;
-  if (button(b, r, t, space ? "hi75-space" : "hi75-soft", space ? 6 : 7, v, hold)) return;
+  if (button(b, r, t, space ? "button-sounds/hi75-space" : "button-sounds/hi75-soft", space ? 6 : 7, v, hold)) return;
   bandNoise(b, r, t, 0.006, 1.6 * v, 3000, 9000, 0.0015);
   bandNoise(b, r, t + 0.008, 0.02, 0.9 * v, 600, 4000, 0.004);
   ring(b, r, t + 0.008, space ? 900 : 1800 + Math.random() * 300, (space ? 0.4 : 0.25) * v, space ? 0.01 : 0.004);
@@ -193,6 +193,45 @@ SOUNDS.radio = (b, r) => {
   for (let i = 0; i < 4; i++) tone(b, r, i * 0.25, 0.11, 1050, { wave: "sine", vol: 0.35, att: 0.005, rel: 0.02 });
   return 1.05;
 };
+
+
+
+// Deleting: a recorded desk shredder (assets/paper-shredder, CC BY 4.0), with a synthesized one as the fallback.
+SOUNDS.shred = (b, r) => {
+  const source = recording("paper-shredder/paper-shredder", r);
+  if (!source) return shredSynth(b, r);
+  const n = Math.min(source.length, b.length);
+  for (let i = 0; i < n; i++) b[i] += source[i] * 1.5;
+  return n / r;
+};
+// The synthesized shredder. The motor spins up, the blades bite and the motor bogs down as the paper
+// tears through, then it clears, picks up speed again and spins down.
+function shredSynth(b, r) {
+  const dur = 0.85, n = Math.round(dur * r);
+  const bite = 0.13, clear = 0.56, stop = 0.62;                 // paper enters, paper is through, motor cuts off
+  const ramp = (t, a, z) => Math.max(0, Math.min(1, (t - a) / (z - a)));
+  let ph = 0, lo1 = 0, lo2 = 0, hp = 0, grain = 1, grainLeft = 0;
+  for (let k = 0; k < n && k < b.length; k++) {
+    const t = k / r;
+    // motor speed: spin up, sag under load, recover, spin down
+    const load = ramp(t, bite, bite + 0.04) * (1 - ramp(t, clear, clear + 0.05));
+    const speed = (0.55 + 0.45 * ramp(t, 0, 0.07)) * (1 - 0.14 * load) * (1 - 0.55 * ramp(t, stop, dur));
+    ph += TAU * 150 * speed / r;
+    const motorVol = Math.min(1, t / 0.02) * (1 - ramp(t, stop, dur)) ** 1.5;
+    const motor = (waves.buzz(ph) * 0.5 + Math.sin(ph * 7) * 0.12 + Math.sin(ph * 11) * 0.05) * (0.9 + 0.1 * Math.sin(TAU * 31 * t));
+    // paper: band-limited noise in rough grains, chattering at the cutter teeth
+    if (grainLeft-- <= 0) { grain = 0.25 + Math.random() * 0.75; grainLeft = Math.round((0.002 + Math.random() * 0.004) * r); }
+    const w = Math.random() * 2 - 1;
+    lo1 += 0.45 * (w - lo1); lo2 += 0.45 * (lo1 - lo2);         // low-pass about 4 kHz
+    hp += 0.05 * (lo2 - hp);                                     // minus everything under about 200 Hz
+    const teeth = 0.55 + 0.45 * Math.abs(Math.sin(Math.PI * 26 * t));
+    const paperEnv = Math.min(1, (t - bite) / 0.015) * Math.min(1, (clear + 0.03 - t) / 0.04) * (0.85 + 0.15 * Math.sin(Math.PI * ramp(t, bite, clear)));
+    const paper = t > bite && t < clear + 0.03 ? (lo2 - hp) * grain * teeth * paperEnv : 0;
+    b[k] += motor * motorVol * 0.22 + paper * 1.2;
+  }
+  tone(b, r, bite, 0.05, [110, 70], { wave: "round", vol: 0.25, att: 0.001, rel: 0.04 });   // the blades bite
+  return dur;
+}
 
 // Every sound above, by name: the tags like [beep] that a spoken line can hold.
 export const SOUND_NAMES = Object.keys(SOUNDS);

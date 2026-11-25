@@ -1,0 +1,9 @@
+paper-shredder.wav is cut from "MACHOffc-Samsung Galaxy Smartphone, CU_Paper Shredder, Start, Shred Paper, Stop_Nicholas Judy_TDC"
+by designerschoice (The Designer's Choice, https://designerschoicesfx.com),
+https://freesound.org/people/designerschoice/sounds/808804/
+
+Licensed under Creative Commons Attribution 4.0 International (CC BY 4.0):
+https://creativecommons.org/licenses/by/4.0/
+
+Changes: mixed to mono, resampled to 16 kHz, high-passed at 30 Hz, normalized to -3 dB, and shortened from
+4.2 s to 1.5 s by joining the start and first bite (0 to 0.95 s) to the motor stopping (3.1 to 3.8 s).

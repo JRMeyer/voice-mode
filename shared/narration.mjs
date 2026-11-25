@@ -79,13 +79,23 @@ const WEB = /^(web_search|web_fetch|web_run|webfetch|websearch|codesearch)$|^mcp
 const SHELL = /^(bash|shell|exec_command|local_shell|unified_exec)$/i;
 
 // What kind of work a tool call is, for the "still working" sound. A shell command is looked at too:
-// `sed -n`, `cat`, `grep` and the like are reading; a redirect into a file or `sed -i` is writing.
+// `sed -n`, `cat`, `grep` and the like are reading; a redirect into a file or `sed -i` is writing; `rm`,
+// `git rm` and `find -delete` are deleting. A patch that only deletes files is deleting.
 export function activityOf(tool, input) {
   if (WEB.test(tool)) return "web";
   if (/^(read|grep|glob|ls|list|list_dir|view_image|notebookread|toolsearch|listmcpresourcestool|readmcpresourcetool)$/i.test(tool)) return "read";
+  if (/^(apply_patch|patch)$/i.test(tool) && onlyDeletes(input)) return "delete";
   if (/^(apply_patch|patch|edit|multiedit|write|notebookedit)$/i.test(tool)) return "write";
   if (SHELL.test(tool)) return shellActivity(commandOf(input));
   return "run";
+}
+
+// A Codex patch whose every file operation is "*** Delete File".
+function onlyDeletes(input) {
+  const o = input && typeof input === "object" ? input : {};
+  const text = typeof input === "string" ? input : String(o.input ?? o.patch ?? o.command ?? "");
+  const ops = text.match(/^\*\*\* (Add|Update|Delete) File:/gm) ?? [];
+  return ops.length > 0 && ops.every(op => op.includes("Delete"));
 }
 
 // The command text of a shell call: a string, or an argv such as ["bash", "-lc", "cat x"].
@@ -100,6 +110,7 @@ function commandOf(input) {
 const READERS = new Set(["cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "rg", "ag", "ls", "tree", "wc",
   "file", "stat", "du", "pwd", "echo", "printf", "jq", "diff", "cmp", "awk", "sort", "uniq", "cut", "tr", "column", "nl",
   "which", "type", "realpath", "dirname", "basename", "fd", "find", "sed", "git", "tee"]);
+const DELETERS = new Set(["rm", "rmdir", "unlink", "trash", "shred"]);
 const NEUTRAL = new Set(["cd", "pushd", "popd", "true", ":"]);
 const GIT_READS = /^(log|diff|show|status|blame|branch|ls-files|grep|rev-parse|describe|shortlog|remote)$/;
 
@@ -135,7 +146,7 @@ function simpleCommands(cmd) {
   return segs.filter(s => s.length);
 }
 
-// read, write or run for one simple command.
+// read, write, delete or run for one simple command.
 function simpleActivity(seg) {
   const words = [];
   let writes = false;
@@ -150,26 +161,29 @@ function simpleActivity(seg) {
   const name = (words[0] ?? "").split("/").at(-1), args = words.slice(1);
   let kind;
   if (!name || NEUTRAL.has(name)) kind = "neutral";
+  else if (DELETERS.has(name)) kind = "delete";
   else if (!READERS.has(name)) kind = "run";
   else if (name === "sed") kind = args.some(a => /^-[a-zA-Z]*i|^--in-place/.test(a)) ? "write" : "read";
   else if (name === "tee") kind = args.some(a => !a.startsWith("-") && a !== "/dev/null") ? "write" : "read";
-  else if (name === "find") kind = args.some(a => /^-(exec|execdir|ok|okdir|delete|fprint\w*)$/.test(a)) ? "run" : "read";
+  else if (name === "find") kind = args.includes("-delete") ? "delete"
+    : args.some(a => /^-(exec|execdir|ok|okdir|fprint\w*)$/.test(a)) ? "run" : "read";
   else if (name === "git") {
     const sub = args.find((a, i) => !a.startsWith("-") && !/^-[Cc]$/.test(args[i - 1] ?? "")) ?? "";
     const changes = /^(branch|remote)$/.test(sub)                // git branch -D x, git remote add ...
       && args.some(a => /^(-[dDmMcC]|--delete|--move|add|remove|rm|rename|set-url)$/.test(a));
-    kind = GIT_READS.test(sub) && !changes ? "read" : "run";
+    kind = /^(rm|clean)$/.test(sub) ? "delete" : GIT_READS.test(sub) && !changes ? "read" : "run";
   } else kind = "read";
-  if (writes) return kind === "run" ? "run" : "write";
+  if (writes) return kind === "run" || kind === "delete" ? kind : "write";
   return kind;
 }
 
-// read when every part only reads, write when the parts read or write files and one writes, otherwise run.
+// run when any part runs something else; otherwise delete when a part deletes, write when one writes, read when all read.
 // Command substitution ($(...) or backticks) could run anything, so it counts as running.
 function shellActivity(cmd) {
   if (!cmd.trim() || /\$\(|`/.test(cmd)) return "run";
   const kinds = simpleCommands(cmd).map(simpleActivity);
   if (kinds.includes("run")) return "run";
+  if (kinds.includes("delete")) return "delete";
   if (kinds.includes("write")) return "write";
   return kinds.includes("read") ? "read" : "run";
 }
