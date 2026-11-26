@@ -78,11 +78,23 @@ test('a clip that starts mid-sentence cuts the voice, which says that sentence a
   await idle();
   const [first, ...rest] = played().slice(before);
   assert.ok(rest.length >= 1, 'a new player after the clip');
-  // The new player opens with audio the cut one already had, from the start of a spoken piece: not from the very
-  // start (the opening beep is a sound, and is not played again), and not new audio.
-  const again = rest.at(-1).subarray(0, 4800), at = first.indexOf(again);
+  // The new player opens with "I repeat", then audio the cut one already had, from the start of a sentence: not
+  // from the very start (the opening beep is a sound, and is not played again), and not new audio.
+  const intro = Number([...logText().matchAll(/i repeat: (\d+) bytes/g)].at(-1)?.[1]);
+  assert.ok(intro > 0, 'it says "I repeat" first');
+  const again = rest.at(-1).subarray(intro, intro + 4800), at = first.indexOf(again);
   assert.equal(again.length, 4800);
-  assert.ok(at > 0, `the cut piece is played again, from its start (found at ${at})`);
+  assert.ok(at > 0, `the cut sentence is played again, from its start (found at ${at})`);
+});
+
+test('a sound alone never plays under the voice, and never later', async () => {
+  const drops = count(/drop sound under the voice/), before = count(/player started/);
+  await post(sock, '/say', 'This sentence is long enough that a sound sent now arrives while the voice is speaking.');
+  await until(() => count(/player started/) > before);
+  await sleep(1000);
+  await post(sock, '/say?bare=1', '[thunk]');
+  await until(() => count(/drop sound under the voice/) > drops);
+  await idle();
 });
 
 test('/stop while held behind a clip drops what was waiting', async () => {
