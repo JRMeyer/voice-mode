@@ -22,7 +22,7 @@ import { spawn } from "node:child_process";
 import { createServer, request } from "node:http";
 import { join, basename } from "node:path";
 import { sfx, SOUND_NAMES } from "./sfx.mjs";
-import { createFloor } from "./floor.mjs";
+import { createFloor, sleep } from "./floor.mjs";
 import { outsideAudio, OUR_PLAYER } from "./outside.mjs";
 
 const SOCK = process.argv[2];
@@ -102,7 +102,6 @@ const pcm = (audio, gapSec) => {
 const rawPlayer = () => spawn(PLAY, ["-q", "-t", "raw", "-r", String(rate), "-e", "signed", "-b", "16", "-c", "1", "-"],
   { argv0: OUR_PLAYER, stdio: ["pipe", "ignore", "pipe"] });      // the name tells it apart from outside audio
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ---- speech queue ----
 // draining: a player whose input is closed but which is still playing its buffer. A new player waits for it to
@@ -114,6 +113,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 let queue = [], player = null, draining = null, busy = false, gen = 0, seed = 0, current = null;
 let sounding = [], playhead = 0;
 const LATENCY = 150;
+const live = (now = Date.now()) => sounding.filter(s => s.wordsEnd + LATENCY > now);   // words not yet heard out
 
 // How long a message may wait (for another session's voice, or for outside audio) before it is dropped as stale.
 const MAX_WAIT = { work: 0, chime: 0, progress: 20000, wait: 120000, say: 90000 };
@@ -133,19 +133,15 @@ function kill(sig = "SIGTERM") {
 }
 
 function stop(session) {
-  let again = [];
   if (session) {
     queue = queue.filter(p => p.msg.session !== session);
     // Decided by what the player is sounding now, not by what the pump picked last: one player can hold the end
     // of one session's line and the start of another's.
-    const now = Date.now(), live = sounding.filter(s => s.wordsEnd + LATENCY > now);
+    const was = live().some(s => s.part.msg.session === session);
     sounding = sounding.filter(s => s.part.msg.session !== session);   // a later cut must not bring it back
-    if (!live.some(s => s.part.msg.session === session)) return;       // another session is speaking: leave it alone
-    again = live.filter(s => s.part.msg.session !== session && !s.part.sound).map(s => s.part);  // said again after
-  } else queue = [];
-  gen++;
-  kill();
-  queue.unshift(...again);
+    if (!was) return;                                            // another session is speaking: leave it alone
+    cut("stop");                                                 // another session's line in the player: said again after
+  } else { queue = []; gen++; kill(); }
   current = null;
   if (!busy) floor.release();
 }
@@ -155,13 +151,12 @@ const drop = msg => { queue = queue.filter(p => p.msg !== msg); };
 // Outside audio started while the voice played: silence it at once and put back what was cut, from the start of
 // the piece that was sounding, so it is said again in full once the clip ends. Sounds are not put back: they only
 // mattered in their moment.
-function cut() {
-  const now = Date.now();
-  const again = sounding.filter(s => s.wordsEnd + LATENCY > now && !s.part.sound).map(s => s.part);
+function cut(why = "outside audio") {
+  const again = live().filter(s => !s.part.sound).map(s => s.part);
   gen++;
   kill();
   queue.unshift(...again);
-  log("cut for outside audio; again:", again.length);
+  log(`cut for ${why}; again:`, again.length);
 }
 
 // Stale: waited past its limit. A message for someone who is needed never is: the person must still hear it.
@@ -285,13 +280,12 @@ async function pump() {
       if (my !== gen || !p) continue;                            // stopped or cut meanwhile
       await p.ready;
       // Last look before the audio goes out: a clip may have started while this piece was made.
-      if (my !== gen || p !== player || queue[0] !== part || (await probe())) continue;
-      if (my !== gen || p !== player || queue[0] !== part) continue;   // and again: ps ran meanwhile
+      if ((await probe()) || my !== gen || p !== player || queue[0] !== part) continue;
       queue.shift();
       current = msg;                                             // what is playing now, for a session's /stop
       const now = Date.now(), from = Math.max(now, playhead);
       playhead = from + (part.bytes.length / 2 / rate) * 1000;
-      sounding = sounding.filter(s => s.wordsEnd + LATENCY > now);
+      sounding = live(now);
       sounding.push({ part, wordsEnd: playhead - part.gap * 1000 });
       if (!p.stdin.write(part.bytes))
         await new Promise(r => { p.stdin.once("drain", r); p.once("exit", r); p.stdin.once("error", r); });  // a killed player never drains

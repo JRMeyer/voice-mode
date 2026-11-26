@@ -55,8 +55,9 @@ export function outsidePlayers(ps, self = process.pid) {
 
 // Is outside audio playing now? A short cache, and one ps at a time: callers asking meanwhile share its answer.
 // If ps cannot run, the answer is no: the voice goes on as it did before this check existed. onError hears why.
+// The cache outlives the daemon's 250 ms poll a little, so checks between two polls reuse its answer: one ps per poll.
 let cached = { at: 0, value: false }, probe = null;
-export function outsideAudio({ maxAge = 200, onError = () => {} } = {}) {
+export function outsideAudio({ maxAge = 300, onError = () => {} } = {}) {
   if (Date.now() - cached.at < maxAge) return Promise.resolve(cached.value);
   probe ??= new Promise(done => {
     const finish = (value, err) => { if (err) onError(err); cached = { at: Date.now(), value }; probe = null; done(value); };
