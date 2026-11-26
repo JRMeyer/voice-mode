@@ -15,12 +15,14 @@
 // Env: VOICE_MODE_JS (tiny-voca js folder, default vendor/tiny-voca), VOICE_MODE_MODEL (.gguf), VOICE_MODE_VOICE (default M2), VOICE_MODE_PLAYER (sox play),
 //   VOICE_MODE_LABEL (project name to say; default: the project folder's name).
 // Every daemon on the machine shares one floor (floor.mjs): only one of them plays at a time.
+// Audio from outside voice-mode (afplay, say, ffplay...: outside.mjs) holds the voice: it waits between two pieces.
 import { readFileSync, existsSync, unlinkSync, appendFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { createServer, request } from "node:http";
 import { join, basename } from "node:path";
 import { sfx, SOUND_NAMES } from "./sfx.mjs";
 import { createFloor } from "./floor.mjs";
+import { outsideAudio } from "./outside.mjs";
 
 const SOCK = process.argv[2];
 const T0 = Date.now();
@@ -124,6 +126,19 @@ function stop(session) {
 
 const drop = msg => { queue = queue.filter(p => p.msg !== msg); };
 
+// Outside audio is playing: wait until it ends. False if the part is no longer first in line meanwhile (stopped,
+// or its message waited too long and was dropped as stale), true when the voice may go on.
+async function quietOutside(part, my) {
+  const msg = part.msg;
+  log("wait for outside audio", msg.kind);
+  for (;;) {
+    if (my !== gen || queue[0] !== part) return false;
+    if (!msg.started && Date.now() - msg.at >= msg.maxWait) { log("drop stale", msg.kind); drop(msg); return false; }
+    await new Promise(r => setTimeout(r, 250));
+    if (!(await outsideAudio())) { log("outside audio ended"); return true; }
+  }
+}
+
 // Text as queue parts: pieces short enough for the model, each tagged with its message.
 const partsOf = (text, msg) => utterancesOf(text, phonemizer, voca.config.max_tokens - 12).map(p => ({ ...p, msg }));
 
@@ -163,6 +178,8 @@ async function pump() {
   try {
     while (queue.length) {
       const my = gen, part = queue[0], msg = part.msg;
+      // Never over a clip that something else plays: hold before each piece until it ends.
+      if (await outsideAudio()) { if (!(await quietOutside(part, my))) continue; }
       // Between two messages, another session waiting gets its turn: finish playing, then hand over the floor.
       if (part.first && !msg.started && floor.held && floor.othersWaiting()) {
         log("yield floor");
@@ -238,8 +255,8 @@ function say(text, { bare = false, kind = "say", session = "", label = LABEL } =
 // otherwise (thinking) -> beeps and boops.
 const ACTIVITY_SOUND = { read: "riffle", write: "type", delete: "shred", run: "whir", web: "radio", think: "working" };
 let hum = null, activity = "think", lastWork = 0;
-function workSound() {
-  if (busy || queue.length || floor.busyElsewhere()) return;   // never under another session's voice
+async function workSound() {
+  if (busy || queue.length || floor.busyElsewhere() || (await outsideAudio())) return;   // never over another voice or a clip
   lastWork = Date.now();
   say(`[${ACTIVITY_SOUND[activity] || "working"}]`, { bare: true, kind: "work" });
 }
