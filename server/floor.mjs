@@ -12,7 +12,7 @@ import { join } from "node:path";
 const isAlive = pid => {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; }
 };
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+export const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 export function createFloor({ home = process.env.VOICE_MODE_HOME || join(homedir(), ".voice-mode"), pid = process.pid, alive = isAlive } = {}) {
   mkdirSync(home, { recursive: true });
