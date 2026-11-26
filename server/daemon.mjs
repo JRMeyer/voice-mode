@@ -114,6 +114,7 @@ let queue = [], player = null, draining = null, busy = false, gen = 0, seed = 0,
 let sounding = [], playhead = 0;
 const LATENCY = 150;
 const live = (now = Date.now()) => sounding.filter(s => s.wordsEnd + LATENCY > now);   // words not yet heard out
+const voiceSounding = () => live().some(s => !s.part.sound);
 
 // How long a message may wait (for another session's voice, or for outside audio) before it is dropped as stale.
 const MAX_WAIT = { work: 0, chime: 0, progress: 20000, wait: 120000, say: 90000 };
@@ -150,12 +151,20 @@ function stop(session) {
 const drop = msg => { queue = queue.filter(p => p.msg !== msg); };
 
 // Outside audio started while the voice played: silence it at once and put back what was cut, from the start of
-// the piece that was sounding, so it is said again in full once the clip ends. Sounds are not put back: they only
-// mattered in their moment.
+// the sentence that was sounding, so it is said again in full once the clip ends, after "I repeat". Sounds are not
+// put back: they only mattered in their moment.
 function cut(why = "outside audio") {
-  const cutOff = live().filter(s => !s.part.sound && !s.part.msg.answered).map(s => s.part);
+  const heard = live().filter(s => !s.part.sound && !s.part.msg.answered).map(s => s.part);
+  const cutOff = heard.filter(p => !p.repeat);
   // From the start of the first cut sentence: its earlier pieces may already have been heard.
   const again = cutOff.length ? [...cutOff[0].sentence.slice(0, cutOff[0].sentence.indexOf(cutOff[0])), ...cutOff] : [];
+  // A cut by a clip says so when it picks up again (and once only, if "I repeat" itself was cut).
+  const head = again[0] ?? (heard.length ? queue.find(p => !p.sound) : null);
+  if (why === "outside audio" && head) {
+    const intro = partsOf("I repeat:", head.msg);
+    for (const p of intro) p.repeat = true;
+    again.unshift(...intro);
+  }
   gen++;
   kill();
   queue.unshift(...again);
@@ -163,7 +172,7 @@ function cut(why = "outside audio") {
 }
 
 // Stale: waited past its limit. A message for someone who is needed never is: the person must still hear it.
-const expired = (msg, now) => msg.kind !== "wait" && now - msg.at >= msg.maxWait;
+const expired = (msg, now) => !(msg.kind === "wait" && msg.speaks) && now - msg.at >= msg.maxWait;
 function dropExpired() {
   const now = Date.now();
   for (const m of new Set(queue.map(p => p.msg))) if (expired(m, now)) { log("drop stale", m.kind); drop(m); }
@@ -245,7 +254,9 @@ function render(part) {
   const t = Date.now();
   const audio = voca.synthesize(part.ids, part.stress, { voice: VOICE, seed: seed++ }).audio;
   log("synth", Date.now() - t, "ms for", (audio.length / rate).toFixed(2), "s");
-  return pcm(audio, part.gap);
+  const out = pcm(audio, part.gap);
+  if (part.repeat) log("i repeat:", out.length, "bytes");
+  return out;
 }
 
 const kick = () => setImmediate(() => pump().catch(e => log("pump failed:", e?.stack || e)));
@@ -257,7 +268,8 @@ async function pump() {
   try {
     while (queue.length) {
       // Never over a clip that something else plays: silence anything still sounding and hold until it ends.
-      if (await probe()) { if (player || draining) cut(); await hold(); continue; }
+      // Fresh before opening a player (once per message); while one plays, the watcher's last answer will do.
+      if (await probe(player ? 300 : 0)) { if (player || draining) cut(); await hold(); continue; }
       const part = queue[0];
       if (!part) continue;                                       // emptied while ps ran (a /stop)
       const my = gen, msg = part.msg;
@@ -282,6 +294,10 @@ async function pump() {
       }
       // Each await above lets requests in: an urgent message may have gone ahead. Go on with whatever is first now.
       if (queue[0] !== part) continue;
+      // A sound alone (a chime, a working sound, the compact sound) never plays under the voice, and never later.
+      if (part.first && !msg.started && !msg.speaks && voiceSounding()) {
+        log("drop sound under the voice", msg.kind); drop(msg); continue;
+      }
       if (part.first && !msg.started) { msg.started = true; current = msg; announce(msg); continue; }
       part.bytes ??= render(part);
       const p = player;
@@ -324,6 +340,10 @@ function say(text, { bare = false, kind = "say", session = "", label = LABEL } =
   if (!parts.length) return 0;
   const last = parts.findLast(p => !p.sound);
   if (last) { last.end = true; msg.speaks = true; }
+  else {
+    msg.maxWait = 0;                                             // a sound alone matters only now: it never waits
+    if (voiceSounding()) { log("drop sound under the voice", kind); return 0; }
+  }
   parts[0].first = true;
   // A message for someone who is needed goes ahead of routine ones not yet started.
   const at = msg.priority ? queue.findIndex(p => p.first && !p.msg.started && p.msg.priority < msg.priority) : -1;
