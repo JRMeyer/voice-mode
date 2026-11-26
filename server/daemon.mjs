@@ -15,14 +15,15 @@
 // Env: VOICE_MODE_JS (tiny-voca js folder, default vendor/tiny-voca), VOICE_MODE_MODEL (.gguf), VOICE_MODE_VOICE (default M2), VOICE_MODE_PLAYER (sox play),
 //   VOICE_MODE_LABEL (project name to say; default: the project folder's name).
 // Every daemon on the machine shares one floor (floor.mjs): only one of them plays at a time.
-// Audio from outside voice-mode (afplay, say, ffplay...: outside.mjs) holds the voice: it waits between two pieces.
+// Audio from outside voice-mode (afplay, say, ffplay...: outside.mjs) holds the voice. If it starts mid-sentence the
+// voice stops at once, and says that sentence again from the start when it ends. Sounds are dropped, not held.
 import { readFileSync, existsSync, unlinkSync, appendFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { createServer, request } from "node:http";
 import { join, basename } from "node:path";
 import { sfx, SOUND_NAMES } from "./sfx.mjs";
 import { createFloor } from "./floor.mjs";
-import { outsideAudio } from "./outside.mjs";
+import { outsideAudio, OUR_PLAYER } from "./outside.mjs";
 
 const SOCK = process.argv[2];
 const T0 = Date.now();
@@ -99,19 +100,34 @@ const pcm = (audio, gapSec) => {
 };
 
 const rawPlayer = () => spawn(PLAY, ["-q", "-t", "raw", "-r", String(rate), "-e", "signed", "-b", "16", "-c", "1", "-"],
-  { stdio: ["pipe", "ignore", "pipe"] });
+  { argv0: OUR_PLAYER, stdio: ["pipe", "ignore", "pipe"] });      // the name tells it apart from outside audio
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ---- speech queue ----
 // draining: a player whose input is closed but which is still playing its buffer. A new player waits for it to
 // exit, or two clips play over each other (a late turn-start line under a quick end summary).
 // Each queued part belongs to a message: { kind, session, label, priority, at, maxWait, speaks }. The first part
 // of a message is marked first. Messages are where this daemon hands the floor to another one that is waiting.
+// sounding: the parts written to the player, each with the time its audio ends (playhead: when the last one ends).
 let queue = [], player = null, draining = null, busy = false, gen = 0, seed = 0, current = null;
+let sounding = [], playhead = 0;
 
-// How long a message may wait for another session's voice before it is dropped as stale.
+// How long a message may wait (for another session's voice, or for outside audio) before it is dropped as stale.
 const MAX_WAIT = { work: 0, chime: 0, progress: 20000, wait: 120000, say: 90000 };
 const PRIORITY = { wait: 1, chime: 1 };
 const SWITCH_WINDOW = 10 * 60 * 1000;                            // name the project if another one spoke in the last 10 minutes
+
+// Outside audio: asked before each piece, and every 250 ms while the voice plays. If ps cannot run, the voice goes
+// on as if nothing played (logged once).
+const OUTSIDE_POLL = 250;
+let probeFailed = false;
+const probe = () => outsideAudio({ onError: e => { if (!probeFailed) { probeFailed = true; log("outside audio check failed:", e?.message || e); } } });
+
+function kill() {
+  for (const p of [player, draining]) if (p) { try { p.kill(); } catch {} }
+  player = null; draining = null; sounding = []; playhead = 0;
+}
 
 function stop(session) {
   if (session) {
@@ -119,23 +135,52 @@ function stop(session) {
     if (current?.session !== session) return;                    // another session is speaking: leave it alone
   } else queue = [];
   gen++;
-  for (const p of [player, draining]) if (p) { try { p.kill(); } catch {} }
-  player = null; draining = null; current = null;
+  kill();
+  current = null;
   if (!busy) floor.release();
 }
 
 const drop = msg => { queue = queue.filter(p => p.msg !== msg); };
 
-// Outside audio is playing: wait until it ends. False if the part is no longer first in line meanwhile (stopped,
-// or its message waited too long and was dropped as stale), true when the voice may go on.
-async function quietOutside(part, my) {
-  const msg = part.msg;
-  log("wait for outside audio", msg.kind);
+// Outside audio started while the voice played: silence it at once and put back what was cut, from the start of
+// the piece that was sounding, so it is said again in full once the clip ends. Sounds are not put back: they only
+// mattered in their moment.
+function cut() {
+  const now = Date.now();
+  const again = sounding.filter(s => s.until > now && !s.part.sound).map(s => s.part);
+  gen++;
+  kill();
+  queue.unshift(...again);
+  log("cut for outside audio; again:", again.length);
+}
+
+// Stale: waited past its limit. A message for someone who is needed never is: the person must still hear it.
+const expired = (msg, now) => msg.kind !== "wait" && now - msg.at >= msg.maxWait;
+function dropExpired() {
+  const now = Date.now();
+  for (const m of new Set(queue.map(p => p.msg))) if (expired(m, now)) { log("drop stale", m.kind); drop(m); }
+}
+
+// Outside audio is playing: hold until it ends. The floor goes back meanwhile, so this daemon never blocks
+// another session, and messages that wait too long are dropped as they go stale.
+async function hold() {
+  log("hold for outside audio");
+  floor.release();
   for (;;) {
-    if (my !== gen || queue[0] !== part) return false;
-    if (!msg.started && Date.now() - msg.at >= msg.maxWait) { log("drop stale", msg.kind); drop(msg); return false; }
-    await new Promise(r => setTimeout(r, 250));
-    if (!(await outsideAudio())) { log("outside audio ended"); return true; }
+    dropExpired();
+    if (!queue.length) return;
+    await sleep(OUTSIDE_POLL);
+    if (!(await probe())) { log("outside audio ended"); dropExpired(); return; }
+  }
+}
+
+// While the pump runs: a clip that starts while the voice is sounding cuts it.
+let watchGen = 0;
+async function watch() {
+  const mine = ++watchGen;
+  while (busy && watchGen === mine) {
+    await sleep(OUTSIDE_POLL);
+    if (playhead > Date.now() && (await probe()) && busy && watchGen === mine && playhead > Date.now()) cut();
   }
 }
 
@@ -172,14 +217,28 @@ function finishPlayer() {
   return draining ? draining.exited : Promise.resolve();
 }
 
+// A part's audio, made once: a part cut by outside audio is played again without synthesizing it again.
+function render(part) {
+  if (part.sound) return sfx(part.sound, rate);
+  const t = Date.now();
+  const audio = voca.synthesize(part.ids, part.stress, { voice: VOICE, seed: seed++ }).audio;
+  log("synth", Date.now() - t, "ms for", (audio.length / rate).toFixed(2), "s");
+  return pcm(audio, part.end ? 0.35 : 0.18);
+}
+
+const kick = () => setImmediate(() => pump().catch(e => log("pump failed:", e?.stack || e)));
+
 async function pump() {
   if (busy) return;
   busy = true;
+  watch();
   try {
     while (queue.length) {
-      const my = gen, part = queue[0], msg = part.msg;
-      // Never over a clip that something else plays: hold before each piece until it ends.
-      if (await outsideAudio()) { if (!(await quietOutside(part, my))) continue; }
+      // Never over a clip that something else plays: silence anything still sounding and hold until it ends.
+      if (await probe()) { if (player || draining) cut(); await hold(); continue; }
+      const part = queue[0];
+      if (!part) continue;                                       // emptied while ps ran (a /stop)
+      const my = gen, msg = part.msg;
       // Between two messages, another session waiting gets its turn: finish playing, then hand over the floor.
       if (part.first && !msg.started && floor.held && floor.othersWaiting()) {
         log("yield floor");
@@ -199,28 +258,29 @@ async function pump() {
         }
         startPlayer();
       }
+      // Each await above lets requests in: an urgent message may have gone ahead. Go on with whatever is first now.
+      if (queue[0] !== part) continue;
       if (part.first && !msg.started) { msg.started = true; current = msg; announce(msg); continue; }
-      queue.shift();
-      let bytes;
-      if (part.sound) bytes = sfx(part.sound, rate);
-      else {
-        const t = Date.now();
-        const audio = voca.synthesize(part.ids, part.stress, { voice: VOICE, seed: seed++ }).audio;
-        log("synth", Date.now() - t, "ms for", (audio.length / rate).toFixed(2), "s");
-        bytes = pcm(audio, part.end ? 0.35 : 0.18);
-      }
+      part.bytes ??= render(part);
       const p = player;
-      if (my !== gen || !p) continue;                            // stopped meanwhile
+      if (my !== gen || !p) continue;                            // stopped or cut meanwhile
       await p.ready;
-      if (my !== gen || p !== player) continue;
-      if (!p.stdin.write(bytes))
+      // Last look before the audio goes out: a clip may have started while this piece was made.
+      if (my !== gen || p !== player || queue[0] !== part || (await probe())) continue;
+      if (my !== gen || p !== player || queue[0] !== part) continue;   // and again: ps ran meanwhile
+      queue.shift();
+      const now = Date.now();
+      playhead = Math.max(now, playhead) + (part.bytes.length / 2 / rate) * 1000;
+      sounding = sounding.filter(s => s.until > now);
+      sounding.push({ part, until: playhead });
+      if (!p.stdin.write(part.bytes))
         await new Promise(r => { p.stdin.once("drain", r); p.once("exit", r); p.stdin.once("error", r); });  // a killed player never drains
       await new Promise(r => setImmediate(r));                   // let /stop and new /say requests in
     }
     await finishPlayer();                                        // the floor is held until the last sound is out
   } finally {
     busy = false;
-    if (queue.length) setImmediate(pump);                        // a /say arrived while the last player drained
+    if (queue.length) kick();                                    // a /say arrived, or a cut put a piece back, at the end
     else { current = null; floor.release(); }
   }
 }
@@ -246,7 +306,7 @@ function say(text, { bare = false, kind = "say", session = "", label = LABEL } =
   // A message for someone who is needed goes ahead of routine ones not yet started.
   const at = msg.priority ? queue.findIndex(p => p.first && !p.msg.started && p.msg.priority < msg.priority) : -1;
   if (at >= 0) queue.splice(at, 0, ...parts); else queue.push(...parts);
-  setImmediate(pump);
+  kick();
   return parts.length;
 }
 
@@ -255,8 +315,13 @@ function say(text, { bare = false, kind = "say", session = "", label = LABEL } =
 // otherwise (thinking) -> beeps and boops.
 const ACTIVITY_SOUND = { read: "riffle", write: "type", delete: "shred", run: "whir", web: "radio", think: "working" };
 let hum = null, activity = "think", lastWork = 0;
+let probing = false;
 async function workSound() {
-  if (busy || queue.length || floor.busyElsewhere() || (await outsideAudio())) return;   // never over another voice or a clip
+  // Never over another voice or a clip. A sound is not worth waiting for: if anything else plays, it is skipped.
+  if (probing || busy || queue.length || floor.busyElsewhere()) return;
+  probing = true;
+  try { if (await probe()) return; } finally { probing = false; }
+  if (!hum || busy || queue.length || floor.busyElsewhere()) return;   // the turn may have ended during the check
   lastWork = Date.now();
   say(`[${ACTIVITY_SOUND[activity] || "working"}]`, { bare: true, kind: "work" });
 }
@@ -296,6 +361,8 @@ function waitStart(text, tags = {}) {
   log("wait start");
 }
 function waitStop() {
+  // The person answered: a "needs you" line still held back (behind outside audio) is not said any more.
+  queue = queue.filter(p => !(p.msg.kind in PRIORITY) || (p.msg === current && player));
   if (!waiting) return;
   clearInterval(waiting); waiting = null; log("wait stop");
 }
