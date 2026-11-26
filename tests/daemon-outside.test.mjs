@@ -1,7 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, symlinkSync, readFileSync, readdirSync, statSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { post } from '../server/client.mjs';
@@ -26,16 +26,22 @@ function clip(ms) {
   const p = spawn(join(dir, 'afplay'), [String(ms / 1000)], { stdio: 'ignore' });
   return new Promise(r => p.on('exit', r));
 }
-// What each player was given, oldest first.
-const played = () => readdirSync(out).map(f => join(out, f)).sort((a, b) => statSync(a).birthtimeMs - statSync(b).birthtimeMs).map(f => readFileSync(f));
+// What each player was given, in the order the daemon started them.
+const played = () => [...logText().matchAll(/player started (\d+)/g)].map(m => join(out, `${m[1]}.raw`))
+  .filter(f => existsSync(f)).map(f => readFileSync(f));
 // Everything said and done: nothing queued and no player left.
-const idle = async () => { for (;;) { if ((await post(sock, '/health')).queued === 0 && count(/player started/) === count(/player exit/)) return; await sleep(100); } };
+async function idle(ms = 30000) {
+  const t0 = Date.now();
+  while (!((await post(sock, '/health')).queued === 0 && count(/player started/) === count(/player exit/))) {
+    if (Date.now() - t0 > ms) throw new Error(`not idle after ${ms} ms; log:\n${logText()}`);
+    await sleep(100);
+  }
+}
 
 before(async () => {
   symlinkSync('/bin/sleep', join(dir, 'afplay'));
   rmSync(sock, { force: true }); rmSync(`${sock}.log`, { force: true });
-  spawn('mkdir', ['-p', out]).on('exit', () => {});
-  await sleep(100);
+  mkdirSync(out);
   daemon = spawn(process.execPath, [join(ROOT, 'server/daemon.mjs'), sock], {
     stdio: 'ignore',
     env: { ...process.env, VOICE_MODE_PLAYER: join(ROOT, 'tests/fake-player.mjs'), VOICE_MODE_HOME: join(dir, 'home'), VOICE_MODE_TEST_OUT: out, VOICE_MODE_LABEL: 'test' },
@@ -44,8 +50,7 @@ before(async () => {
 });
 
 after(async () => {
-  daemon?.kill();
-  await sleep(200);
+  if (daemon && daemon.exitCode === null) await new Promise(r => { daemon.once('exit', r); daemon.kill(); });
   rmSync(dir, { recursive: true, force: true });
   rmSync(sock, { force: true }); rmSync(`${sock}.log`, { force: true });
 });
@@ -73,8 +78,11 @@ test('a clip that starts mid-sentence cuts the voice, which says that sentence a
   await idle();
   const [first, ...rest] = played().slice(before);
   assert.ok(rest.length >= 1, 'a new player after the clip');
-  const again = rest.at(-1).subarray(0, 4800);
-  assert.ok(again.length === 4800 && first.includes(again), 'it opens with audio the cut player already had: the sentence again');
+  // The new player opens with audio the cut one already had, from the start of a spoken piece: not from the very
+  // start (the opening beep is a sound, and is not played again), and not new audio.
+  const again = rest.at(-1).subarray(0, 4800), at = first.indexOf(again);
+  assert.equal(again.length, 4800);
+  assert.ok(at > 0, `the cut piece is played again, from its start (found at ${at})`);
 });
 
 test('/stop while held behind a clip drops what was waiting', async () => {

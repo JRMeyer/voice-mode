@@ -109,9 +109,11 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 // exit, or two clips play over each other (a late turn-start line under a quick end summary).
 // Each queued part belongs to a message: { kind, session, label, priority, at, maxWait, speaks }. The first part
 // of a message is marked first. Messages are where this daemon hands the floor to another one that is waiting.
-// sounding: the parts written to the player, each with the time its audio ends (playhead: when the last one ends).
+// sounding: the parts written to the player, each with the time its words end (playhead: when the last audio ends).
+// Both are estimates from the bytes written; the player starts a little later than the write (LATENCY).
 let queue = [], player = null, draining = null, busy = false, gen = 0, seed = 0, current = null;
 let sounding = [], playhead = 0;
+const LATENCY = 150;
 
 // How long a message may wait (for another session's voice, or for outside audio) before it is dropped as stale.
 const MAX_WAIT = { work: 0, chime: 0, progress: 20000, wait: 120000, say: 90000 };
@@ -132,6 +134,7 @@ function kill() {
 function stop(session) {
   if (session) {
     queue = queue.filter(p => p.msg.session !== session);
+    sounding = sounding.filter(s => s.part.msg.session !== session);   // a later cut must not bring it back
     if (current?.session !== session) return;                    // another session is speaking: leave it alone
   } else queue = [];
   gen++;
@@ -147,7 +150,7 @@ const drop = msg => { queue = queue.filter(p => p.msg !== msg); };
 // mattered in their moment.
 function cut() {
   const now = Date.now();
-  const again = sounding.filter(s => s.until > now && !s.part.sound).map(s => s.part);
+  const again = sounding.filter(s => s.wordsEnd + LATENCY > now && !s.part.sound).map(s => s.part);
   gen++;
   kill();
   queue.unshift(...again);
@@ -170,17 +173,25 @@ async function hold() {
     dropExpired();
     if (!queue.length) return;
     await sleep(OUTSIDE_POLL);
-    if (!(await probe())) { log("outside audio ended"); dropExpired(); return; }
+    if (!(await probe())) {
+      log("outside audio ended");
+      dropExpired();
+      // A "needs you" line held all along gets its full wait for the floor from now.
+      for (const p of queue) if (p.msg.kind === "wait" && !p.msg.started) p.msg.at = Date.now();
+      return;
+    }
   }
 }
 
-// While the pump runs: a clip that starts while the voice is sounding cuts it.
+// While the pump runs: a clip that starts while the voice is sounding cuts it. Sounding: a player is open or still
+// draining, or the estimate says audio is still going out.
 let watchGen = 0;
 async function watch() {
   const mine = ++watchGen;
   while (busy && watchGen === mine) {
     await sleep(OUTSIDE_POLL);
-    if (playhead > Date.now() && (await probe()) && busy && watchGen === mine && playhead > Date.now()) cut();
+    const sounds = () => player || draining || playhead + LATENCY > Date.now();
+    if (sounds() && (await probe()) && busy && watchGen === mine && sounds()) cut();
   }
 }
 
@@ -219,11 +230,12 @@ function finishPlayer() {
 
 // A part's audio, made once: a part cut by outside audio is played again without synthesizing it again.
 function render(part) {
-  if (part.sound) return sfx(part.sound, rate);
+  if (part.sound) { part.gap = 0; return sfx(part.sound, rate); }
+  part.gap = part.end ? 0.35 : 0.18;                             // seconds of silence after the words
   const t = Date.now();
   const audio = voca.synthesize(part.ids, part.stress, { voice: VOICE, seed: seed++ }).audio;
   log("synth", Date.now() - t, "ms for", (audio.length / rate).toFixed(2), "s");
-  return pcm(audio, part.end ? 0.35 : 0.18);
+  return pcm(audio, part.gap);
 }
 
 const kick = () => setImmediate(() => pump().catch(e => log("pump failed:", e?.stack || e)));
@@ -269,10 +281,11 @@ async function pump() {
       if (my !== gen || p !== player || queue[0] !== part || (await probe())) continue;
       if (my !== gen || p !== player || queue[0] !== part) continue;   // and again: ps ran meanwhile
       queue.shift();
-      const now = Date.now();
-      playhead = Math.max(now, playhead) + (part.bytes.length / 2 / rate) * 1000;
-      sounding = sounding.filter(s => s.until > now);
-      sounding.push({ part, until: playhead });
+      current = msg;                                             // what is playing now, for a session's /stop
+      const now = Date.now(), from = Math.max(now, playhead);
+      playhead = from + (part.bytes.length / 2 / rate) * 1000;
+      sounding = sounding.filter(s => s.wordsEnd + LATENCY > now);
+      sounding.push({ part, wordsEnd: playhead - part.gap * 1000 });
       if (!p.stdin.write(part.bytes))
         await new Promise(r => { p.stdin.once("drain", r); p.once("exit", r); p.stdin.once("error", r); });  // a killed player never drains
       await new Promise(r => setImmediate(r));                   // let /stop and new /say requests in
@@ -360,9 +373,12 @@ function waitStart(text, tags = {}) {
   waiting = setInterval(() => { if (++n > 30) return waitStop(); if (!queue.length) say("[chime]", { ...tags, bare: true, kind: "chime" }); }, 30000);
   log("wait start");
 }
-function waitStop() {
-  // The person answered: a "needs you" line still held back (behind outside audio) is not said any more.
-  queue = queue.filter(p => !(p.msg.kind in PRIORITY) || (p.msg === current && player));
+function waitStop(session = "") {
+  // The person answered: a "needs you" line not yet out (held behind outside audio) is not said any more, and one
+  // playing now is not said again after a cut.
+  const answered = m => m.kind in PRIORITY && (!session || m.session === session);
+  queue = queue.filter(p => !answered(p.msg));
+  sounding = sounding.filter(s => !answered(s.part.msg));
   if (!waiting) return;
   clearInterval(waiting); waiting = null; log("wait stop");
 }
@@ -376,7 +392,7 @@ createServer((req, res) => {
     const tags = { session: q.get("session") || "", label: q.get("label") || LABEL };
     try {
       if (path === "/say") out.sentences = say(body, { ...tags, bare: q.get("bare") === "1", kind: q.get("kind") === "progress" ? "progress" : "say" });
-      else if (path === "/stop") { log("stop", tags.session); stop(tags.session); waitStop(); }
+      else if (path === "/stop") { log("stop", tags.session); stop(tags.session); waitStop(tags.session); }
       else if (path === "/mute") {
         log("mute"); stop(); waitStop(); humOff();
         if (q.get("click") === "1") say("[toggleoff]", { bare: true });            // heard, without words
@@ -401,7 +417,7 @@ function bye() {
   waitStop(); humOff();
   // Let speech already queued finish (a summary in flight across a reload), at most 20 s, then exit.
   const t0 = Date.now();
-  const done = () => { try { if (existsSync(SOCK) && !replaced) unlinkSync(SOCK); } catch {} process.exit(0); };
+  const done = () => { kill(); try { if (existsSync(SOCK) && !replaced) unlinkSync(SOCK); } catch {} process.exit(0); };
   const tick = () => (!busy && !queue.length && !draining) || Date.now() - t0 > 20000 ? done() : setTimeout(tick, 200);
   tick();
 }

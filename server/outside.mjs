@@ -15,11 +15,14 @@ const OLD_OURS = /^play -q -t raw -r \d+ -e signed -b 16 -c 1 -$/;
 // which macOS takes from the file a link points to) or by the name the command was run as (the first word of args).
 const PLAYERS = new Set(["afplay", "ffplay", "mpv", "mplayer", "aplay", "paplay", "pw-play", "pw-cat", "say"]);
 
-// One line of `ps -A -ww -o pid= -o ucomm= -o args=`: is it a player voice-mode did not start?
+// One line of `ps -A -ww -o pid= -o stat= -o ucomm= -o args=`: is it a player voice-mode did not start?
 export function isOutsidePlayer(name, args) {
   const first = args.split(/\s+/, 1)[0];
   if (first === OUR_PLAYER || OLD_OURS.test(`${basename(first)}${args.slice(first.length)}`.trim())) return false;
-  if (PLAYERS.has(name) || PLAYERS.has(basename(first))) return true;
+  const as = PLAYERS.has(name) ? name : PLAYERS.has(basename(first)) ? basename(first) : "";
+  if (as === "say") return !/\s(-o|--output-file)(=|\s)/.test(args);  // say -o writes a file: nothing is heard
+  if (as === "mpv") return !/\s--idle\b/.test(args);                   // mpv --idle waits, silent, for files
+  if (as) return true;
   // sox: "play" is a link to it, so ps names it sox on macOS and play on Linux. sox plays when run as play, or
   // when its output is the sound card (-d).
   if (name === "sox" || name === "play") return basename(first) === "play" || /\s(-d|--default-device)(\s|$)/.test(args);
@@ -30,8 +33,9 @@ export function isOutsidePlayer(name, args) {
 export function outsidePlayers(ps, self = process.pid) {
   const out = [];
   for (const line of ps.split("\n")) {
-    const m = /^\s*(\d+)\s+(\S+)\s*(.*)$/.exec(line);
-    if (m && Number(m[1]) !== self && isOutsidePlayer(m[2], m[3])) out.push(Number(m[1]));
+    const m = /^\s*(\d+)\s+(\S+)\s+(\S+)\s*(.*)$/.exec(line);
+    // A zombie (state Z) has exited and plays nothing; it waits only for its parent to collect it.
+    if (m && Number(m[1]) !== self && !m[2].startsWith("Z") && isOutsidePlayer(m[3], m[4])) out.push(Number(m[1]));
   }
   return out;
 }
@@ -44,7 +48,7 @@ export function outsideAudio({ maxAge = 200, onError = () => {} } = {}) {
   probe ??= new Promise(done => {
     const finish = (value, err) => { if (err) onError(err); cached = { at: Date.now(), value }; probe = null; done(value); };
     try {
-      execFile("ps", ["-A", "-ww", "-o", "pid=", "-o", "ucomm=", "-o", "args="], { timeout: 2000, maxBuffer: 16 << 20 },
+      execFile("ps", ["-A", "-ww", "-o", "pid=", "-o", "stat=", "-o", "ucomm=", "-o", "args="], { timeout: 2000, maxBuffer: 16 << 20 },
         (err, stdout) => err ? finish(false, err) : finish(outsidePlayers(stdout).length > 0));
     } catch (err) { finish(false, err); }
   });

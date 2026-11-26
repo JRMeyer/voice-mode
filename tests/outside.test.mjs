@@ -2,16 +2,25 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { outsidePlayers, outsideAudio, isOutsidePlayer, OUR_PLAYER } from '../server/outside.mjs';
 
-// Lines as `ps -A -ww -o pid= -o ucomm= -o args=` prints them.
+// Lines as `ps -A -ww -o pid= -o stat= -o ucomm= -o args=` prints them.
 const ps = lines => lines.join('\n');
 
 test('afplay, say, ffplay and mpv count as outside audio', () => {
   assert.deepEqual(outsidePlayers(ps([
-    '  101 afplay           /usr/bin/afplay /tmp/clip one.wav',
-    '  102 say              say hello there',
-    '  103 ffplay           /opt/homebrew/bin/ffplay -nodisp -autoexit song.mp3',
-    '  104 mpv              mpv song.flac',
+    '  101 S    afplay           /usr/bin/afplay /tmp/clip one.wav',
+    '  102 S    say              say hello there',
+    '  103 S    ffplay           /opt/homebrew/bin/ffplay -nodisp -autoexit song.mp3',
+    '  104 S    mpv              mpv song.flac',
   ]), 1), [101, 102, 103, 104]);
+});
+
+test('a zombie player, say writing a file and an idle mpv play nothing', () => {
+  assert.deepEqual(outsidePlayers(ps([
+    '  401 Z    afplay           afplay a.wav',
+    '  402 S    say              say -o out.aiff hello',
+    '  403 S    mpv              mpv --idle',
+    '  404 S+   afplay           afplay b.wav',
+  ]), 1), [404]);
 });
 
 test('a player in a folder with spaces is found by its process name', () => {
@@ -39,11 +48,11 @@ test("voice-mode's own players, new and from before 0.5.15, are not outside audi
 
 test('other programs, the shell that ran a player, blank lines and this process are ignored', () => {
   assert.deepEqual(outsidePlayers(ps([
-    '  301 replayd          /usr/libexec/replayd',
+    '  301 S    replayd          /usr/libexec/replayd',
     '',
-    '  302 zsh              /bin/zsh -c afplay x.wav',
-    '  303 node             node daemon.mjs /d/voice.sock',
-    '  304 afplay           afplay a.wav',
+    '  302 S    zsh              /bin/zsh -c afplay x.wav',
+    '  303 S    node             node daemon.mjs /d/voice.sock',
+    '  304 S    afplay           afplay a.wav',
   ]), 304), []);
 });
 
