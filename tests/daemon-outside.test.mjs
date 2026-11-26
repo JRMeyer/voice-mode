@@ -50,7 +50,7 @@ before(async () => {
 });
 
 after(async () => {
-  if (daemon && daemon.exitCode === null) await new Promise(r => { daemon.once('exit', r); daemon.kill(); });
+  if (daemon && daemon.exitCode === null && daemon.signalCode === null) await new Promise(r => { daemon.once('exit', r); daemon.kill(); });
   rmSync(dir, { recursive: true, force: true });
   rmSync(sock, { force: true }); rmSync(`${sock}.log`, { force: true });
 });

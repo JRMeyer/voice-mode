@@ -126,19 +126,26 @@ const OUTSIDE_POLL = 250;
 let probeFailed = false;
 const probe = () => outsideAudio({ onError: e => { if (!probeFailed) { probeFailed = true; log("outside audio check failed:", e?.message || e); } } });
 
-function kill() {
-  for (const p of [player, draining]) if (p) { try { p.kill(); } catch {} }
+// SIGTERM lets sox play out what it has buffered; SIGKILL silences it at once (on exit, before the floor goes).
+function kill(sig = "SIGTERM") {
+  for (const p of [player, draining]) if (p) { try { p.kill(sig); } catch {} }
   player = null; draining = null; sounding = []; playhead = 0;
 }
 
 function stop(session) {
+  let again = [];
   if (session) {
     queue = queue.filter(p => p.msg.session !== session);
+    // Decided by what the player is sounding now, not by what the pump picked last: one player can hold the end
+    // of one session's line and the start of another's.
+    const now = Date.now(), live = sounding.filter(s => s.wordsEnd + LATENCY > now);
     sounding = sounding.filter(s => s.part.msg.session !== session);   // a later cut must not bring it back
-    if (current?.session !== session) return;                    // another session is speaking: leave it alone
+    if (!live.some(s => s.part.msg.session === session)) return;       // another session is speaking: leave it alone
+    again = live.filter(s => s.part.msg.session !== session && !s.part.sound).map(s => s.part);  // said again after
   } else queue = [];
   gen++;
   kill();
+  queue.unshift(...again);
   current = null;
   if (!busy) floor.release();
 }
@@ -363,13 +370,14 @@ function setActivity(kind) {
 }
 
 // ---- waiting on the user: speak once, then a chime every 30 s (for up to 15 minutes) ----
-let waiting = null;
+let waiting = null, waitingFor = "";
 // Someone needs the user: this goes ahead of other sessions' narration.
 function waitStart(text, tags = {}) {
   waitStop();
   humOff();
   say(`[chime] ${text}`, { ...tags, bare: true, kind: "wait" });
   let n = 0;
+  waitingFor = tags.session || "";
   waiting = setInterval(() => { if (++n > 30) return waitStop(); if (!queue.length) say("[chime]", { ...tags, bare: true, kind: "chime" }); }, 30000);
   log("wait start");
 }
@@ -379,7 +387,7 @@ function waitStop(session = "") {
   const answered = m => m.kind in PRIORITY && (!session || m.session === session);
   queue = queue.filter(p => !answered(p.msg));
   sounding = sounding.filter(s => !answered(s.part.msg));
-  if (!waiting) return;
+  if (!waiting || (session && waitingFor && session !== waitingFor)) return;   // another session's chime goes on
   clearInterval(waiting); waiting = null; log("wait stop");
 }
 
@@ -417,7 +425,7 @@ function bye() {
   waitStop(); humOff();
   // Let speech already queued finish (a summary in flight across a reload), at most 20 s, then exit.
   const t0 = Date.now();
-  const done = () => { kill(); try { if (existsSync(SOCK) && !replaced) unlinkSync(SOCK); } catch {} process.exit(0); };
+  const done = () => { kill("SIGKILL"); try { if (existsSync(SOCK) && !replaced) unlinkSync(SOCK); } catch {} process.exit(0); };
   const tick = () => (!busy && !queue.length && !draining) || Date.now() - t0 > 20000 ? done() : setTimeout(tick, 200);
   tick();
 }

@@ -15,13 +15,26 @@ const OLD_OURS = /^play -q -t raw -r \d+ -e signed -b 16 -c 1 -$/;
 // which macOS takes from the file a link points to) or by the name the command was run as (the first word of args).
 const PLAYERS = new Set(["afplay", "ffplay", "mpv", "mplayer", "aplay", "paplay", "pw-play", "pw-cat", "say"]);
 
+// Is it say -o (or --output-file)? Only its options count, the words before the text: "say use -o" is heard.
+const SAY_VALUE = new Set(["-v", "--voice", "-r", "--rate", "-f", "--input-file", "-a", "--audio-device", "-n",
+  "--network-send", "--file-format", "--data-format", "--channels", "--bit-rate", "--quality"]);
+function sayToFile(args) {
+  const words = args.split(/\s+/).slice(1);
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (w === "-o" || w.startsWith("-o") && w.length > 2 || w === "--output-file" || w.startsWith("--output-file=")) return true;
+    if (!w.startsWith("-")) return false;                          // the text starts here
+    if (SAY_VALUE.has(w)) i++;                                     // skip the option's value
+  }
+  return false;
+}
+
 // One line of `ps -A -ww -o pid= -o stat= -o ucomm= -o args=`: is it a player voice-mode did not start?
 export function isOutsidePlayer(name, args) {
   const first = args.split(/\s+/, 1)[0];
   if (first === OUR_PLAYER || OLD_OURS.test(`${basename(first)}${args.slice(first.length)}`.trim())) return false;
   const as = PLAYERS.has(name) ? name : PLAYERS.has(basename(first)) ? basename(first) : "";
-  if (as === "say") return !/\s(-o|--output-file)(=|\s)/.test(args);  // say -o writes a file: nothing is heard
-  if (as === "mpv") return !/\s--idle\b/.test(args);                   // mpv --idle waits, silent, for files
+  if (as === "say") return !sayToFile(args);                         // say -o writes a file: nothing is heard
   if (as) return true;
   // sox: "play" is a link to it, so ps names it sox on macOS and play on Linux. sox plays when run as play, or
   // when its output is the sound card (-d).

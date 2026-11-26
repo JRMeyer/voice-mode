@@ -14,13 +14,15 @@ test('afplay, say, ffplay and mpv count as outside audio', () => {
   ]), 1), [101, 102, 103, 104]);
 });
 
-test('a zombie player, say writing a file and an idle mpv play nothing', () => {
+test('a zombie player and say writing a file play nothing; say speaking about -o is heard', () => {
   assert.deepEqual(outsidePlayers(ps([
     '  401 Z    afplay           afplay a.wav',
     '  402 S    say              say -o out.aiff hello',
-    '  403 S    mpv              mpv --idle',
+    '  403 S    say              say -v Alex --output-file=x.aiff hi',
     '  404 S+   afplay           afplay b.wav',
-  ]), 1), [404]);
+    '  405 S    say              say Use the -o option',
+    '  406 S    mpv              mpv --idle=no song.wav',
+  ]), 1), [404, 405, 406]);
 });
 
 test('a player in a folder with spaces is found by its process name', () => {
