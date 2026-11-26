@@ -12,7 +12,7 @@ A plugin for Claude Code, Codex and OpenCode that lets the agent talk to you out
   - At the end of a turn, a rising chirp means it went well and a low buzz means something failed, before the spoken summary.
   - A heavier thunk marks a step that took 30 seconds or more, with a short spoken note about it.
 - **Pronunciation:** `server/pronounce.txt` lists words the voice gets wrong, as `word = how to say it`. Contractions are expanded before speaking ("cannot", not "can't").
-- **Welcome and waitlist:** the very first time the voice speaks, it says a short welcome once, and one line on screen offers a spot on the waitlist for what comes next. Type `/waitlist you@example.com` to get one email when it is ready. Your email goes to a Kit mailing list and is used only for this.
+- **Welcome and waitlist:** the very first time the voice speaks, it says a short welcome once, and at the start of every session one line on screen offers a spot on the waitlist for what comes next, until you sign up. Type `/waitlist you@example.com` to get one email when it is ready. Your email goes to a Kit mailing list and is used only for this.
 - **On/off:** type `/voice-mode off` or `/voice-mode on`, or just say so in a message: "stop talking", "go quiet" or "shut up" turns the voice off at once (a click confirms it), and "you can talk again" or "voice on" turns it back on. New messages, including ones sent while Claude works, stop any speech still playing.
 
 ## Requirements

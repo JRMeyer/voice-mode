@@ -16,13 +16,15 @@ function memStore(on: any, seed: Record<string, unknown> = {}) {
 async function start($: any, on: any) {
   const clock = mock.clock(on)
   const posts: [string, string][] = []
+  const logs: string[] = []
   on('process.hookEnv', (() => ({ value: { CLAUDE_PLUGIN_ROOT: '/p', CLAUDE_PLUGIN_DATA: '/d', CLAUDE_CODE_SESSION_ID: 'abcdefgh-1234' } })) as never)
   on('process.spawn', (async function* () { return { deny: 'no daemon in tests' } }) as never)
-  on('ui.log', (() => ({ value: undefined })) as never)
+  on('ui.log', ((_: unknown, e: unknown) => { logs.push(JSON.stringify(e)); return { value: undefined } }) as never)
   on('ui.status', (() => ({ value: undefined })) as never)
   on('fs.write', (() => ({ value: undefined })) as never)
   on('command.register', ((_: unknown, e: { name: string }) => ({ value: { command: e.name } })) as never)
   on('http.fetch', ((_: unknown, e: { url: string; init?: { body?: string } }) => {
+    if (e.url.startsWith('https://app.kit.com/')) return { value: { status: 200, ok: true, headers: {}, text: '{"status":"success"}' } }
     posts.push([e.url.replace('http://voice-mode', ''), String(e.init?.body ?? '')])
     return { value: { status: 200, ok: true, headers: {}, text: '{"ok":true}' } }
   }) as never)
@@ -30,7 +32,7 @@ async function start($: any, on: any) {
   on('session.end', (() => ({ sessionId: 'abcdefgh' })) as never)
   on('classic.PermissionRequest', (() => ({})) as never)
   await $.session.start({ cwd: '/w', surface: null, isInteractive: false })
-  return { clock, posts, done: () => clock.advance(5000) }
+  return { clock, posts, logs, done: () => clock.advance(5000) }
 }
 
 test('the hooks module loads shared/narration.mjs in the sandbox', async ($, on) => {
@@ -118,5 +120,25 @@ test('compacting the main conversation plays the trash compactor; a precompute o
   expect(posts.filter(([, b]) => b === '[compact]')).toEqual([])
   await ($ as any).session.compact({ trigger: 'manual', messages })
   expect(posts.filter(([, b]) => b === '[compact]')).toEqual([['/say?bare=1', '[compact]']])
+  await done()
+})
+
+test('the waitlist line shows on the first turn of every session until you sign up', async ($, on) => {
+  const store = memStore(on, { welcomed: true })
+  on('model.complete', (() => ({ value: { isAnswered: false, reason: 'no model in tests' } })) as never)
+  on('turn.start', ((_: unknown, e: { turnId: string }) => ({ turnId: e.turnId })) as never)
+  const { logs, done } = await start($, on)
+  const waitlist = () => logs.filter(l => l.includes('/waitlist')).length
+  await ($ as any).turn.start({ turnId: 't1', text: 'one' })
+  await ($ as any).turn.start({ turnId: 't2', text: 'two' })
+  expect(waitlist()).toBe(1)
+  await $.session.start({ cwd: '/w', surface: null, isInteractive: false })
+  await ($ as any).turn.start({ turnId: 't3', text: 'three' })
+  expect(waitlist()).toBe(2)
+  await ($ as any).command.run({ command: 'waitlist', args: 'a@b.co' })
+  expect(store.get('joined')).toBe(true)
+  await $.session.start({ cwd: '/w', surface: null, isInteractive: false })
+  await ($ as any).turn.start({ turnId: 't4', text: 'four' })
+  expect(waitlist()).toBe(2)
   await done()
 })

@@ -5,8 +5,10 @@ import {
 
 const OFF_KEY = 'off'
 
-// The waitlist for what comes next: one line, shown once, and a command that signs you up.
+// The waitlist for what comes next: a spoken welcome once ever, one line on screen at the start of every session
+// until you sign up, and a command that signs you up.
 const WELCOMED = 'welcomed'
+const JOINED = 'joined'
 const WELCOME = '[boot] Welcome to voice mode. Join the waitlist for what comes next. The command is on screen.'
 const WAITLIST_FORM = 'https://app.kit.com/forms/10238084/subscriptions'
 const WAITLIST_LINE = 'Want early access to what comes next? Join the waitlist: /waitlist you@example.com'
@@ -93,6 +95,7 @@ export const register: Register = on => {
   let sock: string | undefined
   let sid = 'x'
   let owner = ''                    // this process's token in the store's owner-<sid>
+  let invited = false               // the waitlist line was shown this session
   const wait: Wait = { pending: 0, on: false }
   on('session.start', async ($, e, next) => {
     const started = await next(e)
@@ -101,6 +104,7 @@ export const register: Register = on => {
     const data = env.CLAUDE_PLUGIN_DATA
     const id = (env.CLAUDE_CODE_SESSION_ID || 'x').slice(0, 8)
     sid = id
+    invited = false
     sock = `${data}/voice-${id}.sock`
     const path = sock
     const me = Math.random().toString(36).slice(2, 10)
@@ -187,11 +191,12 @@ export const register: Register = on => {
     await $.store.set(TURN_KEY(), { id: e.turnId, prompt: turn.prompt, t0: turn.t0 }).catch(() => {})
     post($, sock, '/hum/on').catch(() => {})
     const id = e.turnId
-    // Once ever, before the first spoken line: a short welcome, and the waitlist line on screen.
+    // Once ever, before the first spoken line: a short welcome. Once a session, until you sign up: the waitlist line.
     const welcome = !(await $.store.get(WELCOMED).catch(() => true))
-    if (welcome) {
-      await $.store.set(WELCOMED, true).catch(() => {})
-      $.ui.log(WAITLIST_LINE)
+    if (welcome) await $.store.set(WELCOMED, true).catch(() => {})
+    if (!invited) {
+      invited = true
+      if (!(await $.store.get(JOINED).catch(() => true))) $.ui.log(WAITLIST_LINE)
     }
     void (async () => {
       if (welcome) await say($, sock, WELCOME).catch(() => {})
@@ -286,7 +291,7 @@ export const register: Register = on => {
       })
       const j = JSON.parse(r.text || '{}') as { status?: string; errors?: { messages?: string[] } }
       if (r.ok && j.status === 'success') {
-        await $.store.set(WELCOMED, true).catch(() => {})
+        await $.store.set(JOINED, true).catch(() => {})
         return { text: `You are on the waitlist. One email when it is ready.\n${WAITLIST_PRIVACY}` }
       }
       return { text: `Not signed up: ${j.errors?.messages?.join(' ') || `the server said ${r.status}`}. Try again: /waitlist you@example.com` }
