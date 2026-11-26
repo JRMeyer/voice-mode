@@ -19,7 +19,8 @@ function finished(text) {
   return marked ? text : body + ".";
 }
 
-export function utterancesOf(text, phonemizer, limit) {
+// The same pieces, grouped by sentence: [[pieces of sentence 1], [pieces of sentence 2], ...].
+export function sentencesOf(text, phonemizer, limit) {
   const fit = (sentence) => {
     let result;
     try {
@@ -39,8 +40,10 @@ export function utterancesOf(text, phonemizer, limit) {
     const half = Math.ceil(words.length / 2);
     return [...fit(words.slice(0, half).join(" ")), ...fit(words.slice(half).join(" "))];
   };
-  return sentences(finished(text)).flatMap(fit);
+  return sentences(finished(text)).map(fit).filter((pieces) => pieces.length);
 }
+
+export const utterancesOf = (text, phonemizer, limit) => sentencesOf(text, phonemizer, limit).flat();
 
 export const limited = (audio) => {
   const loudest = audio.reduce((top, sample) => Math.max(top, Math.abs(sample)), 0);

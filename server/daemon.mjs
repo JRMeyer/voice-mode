@@ -48,7 +48,7 @@ if (existsSync(SOCK)) {
 
 const { readGGUF, TinyVoca } = await import(join(JS, "tiny-voca.js"));
 const { fromGGUF } = await import(join(JS, "dizione/engine.js"));
-const { utterancesOf, limited } = await import(join(JS, "text.js"));
+const { sentencesOf, limited } = await import(join(JS, "text.js"));
 const file = readGGUF(new Uint8Array(readFileSync(MODEL)).buffer);
 const voca = new TinyVoca(file), phonemizer = await fromGGUF(file);
 const rate = voca.config.sample_rate;
@@ -124,11 +124,12 @@ const SWITCH_WINDOW = 10 * 60 * 1000;                            // name the pro
 // on as if nothing played (logged once).
 const OUTSIDE_POLL = 250;
 let probeFailed = false;
-const probe = () => outsideAudio({ onError: e => { if (!probeFailed) { probeFailed = true; log("outside audio check failed:", e?.message || e); } } });
+// maxAge: the watcher asks for a fresh answer each poll; other checks may share one up to 300 ms old.
+const probe = (maxAge = 300) => outsideAudio({ maxAge, onError: e => { if (!probeFailed) { probeFailed = true; log("outside audio check failed:", e?.message || e); } } });
 
-// SIGTERM lets sox play out what it has buffered; SIGKILL silences it at once (on exit, before the floor goes).
-function kill(sig = "SIGTERM") {
-  for (const p of [player, draining]) if (p) { try { p.kill(sig); } catch {} }
+// SIGKILL: sox on SIGTERM plays out what it has buffered, and a stop or a cut must be silent at once.
+function kill() {
+  for (const p of [player, draining]) if (p) { try { p.kill("SIGKILL"); } catch {} }
   player = null; draining = null; sounding = []; playhead = 0;
 }
 
@@ -152,7 +153,9 @@ const drop = msg => { queue = queue.filter(p => p.msg !== msg); };
 // the piece that was sounding, so it is said again in full once the clip ends. Sounds are not put back: they only
 // mattered in their moment.
 function cut(why = "outside audio") {
-  const again = live().filter(s => !s.part.sound).map(s => s.part);
+  const cutOff = live().filter(s => !s.part.sound && !s.part.msg.answered).map(s => s.part);
+  // From the start of the first cut sentence: its earlier pieces may already have been heard.
+  const again = cutOff.length ? [...cutOff[0].sentence.slice(0, cutOff[0].sentence.indexOf(cutOff[0])), ...cutOff] : [];
   gen++;
   kill();
   queue.unshift(...again);
@@ -193,12 +196,17 @@ async function watch() {
   while (busy && watchGen === mine) {
     await sleep(OUTSIDE_POLL);
     const sounds = () => player || draining || playhead + LATENCY > Date.now();
-    if (sounds() && (await probe()) && busy && watchGen === mine && sounds()) cut();
+    if (sounds() && (await probe(OUTSIDE_POLL - 50)) && busy && watchGen === mine && sounds()) cut();
   }
 }
 
 // Text as queue parts: pieces short enough for the model, each tagged with its message.
-const partsOf = (text, msg) => utterancesOf(text, phonemizer, voca.config.max_tokens - 12).map(p => ({ ...p, msg }));
+// Each piece knows the pieces of its sentence: a long sentence is made in several, and a cut says it again whole.
+const partsOf = (text, msg) => sentencesOf(text, phonemizer, voca.config.max_tokens - 12).flatMap(pieces => {
+  const sentence = pieces.map(p => ({ ...p, msg }));
+  for (const p of sentence) p.sentence = sentence;
+  return sentence;
+});
 
 // When the voice switches projects, a message opens with the project name, after its opening sound.
 function announce(msg) {
@@ -372,7 +380,11 @@ function waitStart(text, tags = {}) {
   say(`[chime] ${text}`, { ...tags, bare: true, kind: "wait" });
   let n = 0;
   waitingFor = tags.session || "";
-  waiting = setInterval(() => { if (++n > 30) return waitStop(); if (!queue.length) say("[chime]", { ...tags, bare: true, kind: "chime" }); }, 30000);
+  // After 15 minutes the chimes stop; the line itself, if still held behind a clip, is still said.
+  waiting = setInterval(() => {
+    if (++n > 30) { clearInterval(waiting); waiting = null; return; }
+    if (!queue.length) say("[chime]", { ...tags, bare: true, kind: "chime" });
+  }, 30000);
   log("wait start");
 }
 function waitStop(session = "") {
@@ -380,7 +392,7 @@ function waitStop(session = "") {
   // playing now is not said again after a cut.
   const answered = m => m.kind in PRIORITY && (!session || m.session === session);
   queue = queue.filter(p => !answered(p.msg));
-  sounding = sounding.filter(s => !answered(s.part.msg));
+  for (const s of sounding) if (answered(s.part.msg)) s.part.msg.answered = true;   // still heard out, never again
   if (!waiting || (session && waitingFor && session !== waitingFor)) return;   // another session's chime goes on
   clearInterval(waiting); waiting = null; log("wait stop");
 }
@@ -403,7 +415,7 @@ createServer((req, res) => {
       else if (path === "/hum/off") endWork();
       else if (path === "/activity") setActivity(body.trim());
       else if (path === "/wait/start") waitStart(body, tags);
-      else if (path === "/wait/stop") waitStop();
+      else if (path === "/wait/stop") waitStop(tags.session);
       else if (path === "/health") out.queued = queue.length;
       else if (path === "/quit") setImmediate(quitByPeer);
       else out = { ok: false, error: "unknown path" };
@@ -419,7 +431,7 @@ function bye() {
   waitStop(); humOff();
   // Let speech already queued finish (a summary in flight across a reload), at most 20 s, then exit.
   const t0 = Date.now();
-  const done = () => { kill("SIGKILL"); try { if (existsSync(SOCK) && !replaced) unlinkSync(SOCK); } catch {} process.exit(0); };
+  const done = () => { kill(); try { if (existsSync(SOCK) && !replaced) unlinkSync(SOCK); } catch {} process.exit(0); };
   const tick = () => (!busy && !queue.length && !draining) || Date.now() - t0 > 20000 ? done() : setTimeout(tick, 200);
   tick();
 }

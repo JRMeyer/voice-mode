@@ -9,7 +9,7 @@ const DAEMON = fileURLToPath(new URL("./daemon.mjs", import.meta.url));
 // POST to the daemon. tags ({ session, label }) are added to the paths that use them.
 export function post(sock, path, body = "", tags = {}, timeout = 3000) {
   const q = new URLSearchParams(Object.entries(tags).filter(([, v]) => v)).toString();
-  if (q && /^\/(say|stop|wait\/start)\b/.test(path)) path += (path.includes("?") ? "&" : "?") + q;
+  if (q && /^\/(say|stop|wait\/start|wait\/stop)\b/.test(path)) path += (path.includes("?") ? "&" : "?") + q;
   return new Promise((done, fail) => {
     const r = request({ socketPath: sock, path, method: "POST", timeout }, res => {
       let t = "";
